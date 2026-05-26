@@ -64,8 +64,19 @@ data:
     system_prompt_file: examples/prompts/gsm8k.txt
 logger:
   log_dir: logs/ppo-qwen2.5-1.5b-gsm8k-1n8g-megatron
+  wandb_enabled: true
   wandb:
-    project: binguo-ppo-v1
-    name: ppo-qwen2.5-1.5b-gsm8k-1n8g-megatron
+    # Project / run names kept free of any personal names; matches the
+    # sibling DTensor recipe (see ppo-qwen2.5-1.5b-gsm8k-1n8g-dtensor.yaml)
+    # so DTensor vs Megatron A/B curves render in the same wandb project.
+    project: nemo-rl-ppo-port-v1
+    name: ppo-qwen2.5-1.5b-gsm8k-1n8g-megatron-port
+    # stable id (no dots — wandb id only allows [A-Za-z0-9_-]) so every Slurm
+    # resubmit `wandb.init()` resumes the SAME run instead of creating a new
+    # one. `resume: allow` = resume if exists, create if not. Mirrors the
+    # DTensor yaml's id/resume settings; distinct -dtensor / -megatron
+    # suffixes keep the two backends as two separate runs in the project.
+    id: ppo-qwen2_5-1p5b-gsm8k-1n8g-megatron-port
+    resume: allow
 cluster:
   gpus_per_node: 8

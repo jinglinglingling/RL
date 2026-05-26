@@ -240,6 +240,7 @@ guides/dapo.md
 guides/prorlv2.md
 guides/grpo.md
 guides/ppo.md
+guides/ppo-dtensor.md
 guides/grpo-deepscaler.md
 guides/grpo-sliding-puzzle.md
 guides/grpo-audio.md
