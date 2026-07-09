@@ -1,0 +1,60 @@
+defaults:
+  - ../../Nemo-RL-main-1/RL-merge-2689/examples/configs/recipes/vlm/vlm_grpo-qwen2.5-omni-7b-audiomcq-1n8g-megatron.v1.yaml
+
+grpo:
+  max_num_steps: 500
+  num_generations_per_prompt: 4
+  val_period: 20
+  val_at_start: true
+
+checkpointing:
+  enabled: true
+  checkpoint_dir: ./outputs/checkpoints/osworld_grpo_qwen_vl
+  keep_top_k: 5
+  save_period: 20
+
+policy:
+  model_name: Qwen/Qwen2.5-Omni-7B
+  train_global_batch_size: 16
+  generation_batch_size: 8
+  logprob_batch_size: 1
+  max_total_sequence_length: 4096
+  generation:
+    max_new_tokens: 256
+    vllm_cfg:
+      skip_tokenizer_init: false
+      tensor_parallel_size: 2
+      gpu_memory_utilization: 0.7
+      max_model_len: 4096
+
+data:
+  max_input_seq_length: 4096
+  num_workers: 0
+  train:
+    dataset_name: ResponseDataset
+    data_path: ./data/nemorl/osworld_train.jsonl
+    split_validation_size: 0
+    seed: 42
+  validation:
+    dataset_name: ResponseDataset
+    data_path: ./data/nemorl/osworld_val.jsonl
+  default:
+    prompt_file: null
+    processor: osworld_vlm_data_processor
+    env_name: vlm
+
+env:
+  vlm:
+    num_workers: 8
+    reward_functions:
+      - name: exact_alnum
+        weight: 1.0
+
+logger:
+  log_dir: ./outputs/logs/osworld_grpo_qwen_vl
+  wandb_enabled: false
+  tensorboard_enabled: true
+  swanlab_enabled: false
+
+cluster:
+  gpus_per_node: 8
