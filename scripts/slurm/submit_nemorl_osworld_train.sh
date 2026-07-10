@@ -10,9 +10,42 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
-WORKTREE="${WORKTREE:-${PROJECT_ROOT}/../Nemo-RL-main-1/RL-merge-2689}"
+WORKTREE_REQUESTED="${WORKTREE:-${PROJECT_ROOT}/../Nemo-RL-main-1/RL-merge-2689}"
 NEMORL_LOG_ROOT="${NEMORL_LOG_ROOT:-/lustre/fsw/portfolios/coreai/projects/coreai_dlalgo_nemorl/users/linglinj/sbatch_histrory}"
 RAY_SUB_SRC="${RAY_SUB:-/lustre/fsw/portfolios/coreai/projects/coreai_dlalgo_nemorl/users/linglinj/Nemo-RL-Library/Omni_project/Nemo-RL-Omni-vllm0.2/nemo-rl/ray.sub}"
+
+resolve_nemorl_worktree() {
+  local requested="$1"
+  local candidates=(
+    "$requested"
+    "${PROJECT_ROOT}/../Nemo-RL-main-1/RL"
+    "${PROJECT_ROOT}/../Nemo-RL-main-1/RL-pr2791-push"
+    "${PROJECT_ROOT}/../Nemo-RL-main-1-clean"
+    "${PROJECT_ROOT}/../Nemo-RL-main/RL"
+  )
+  local candidate
+  for candidate in "${candidates[@]}"; do
+    [[ -n "${candidate}" ]] || continue
+    if [[ -f "${candidate}/nemo_rl/distributed/virtual_cluster.py" && -f "${candidate}/examples/run_vlm_grpo.py" ]]; then
+      echo "${candidate}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+if ! WORKTREE="$(resolve_nemorl_worktree "${WORKTREE_REQUESTED}")"; then
+  echo "[FATAL] No usable NeMo-RL worktree found." >&2
+  echo "        Requested: ${WORKTREE_REQUESTED}" >&2
+  echo "        Need both files:" >&2
+  echo "          nemo_rl/distributed/virtual_cluster.py" >&2
+  echo "          examples/run_vlm_grpo.py" >&2
+  exit 1
+fi
+if [[ "${WORKTREE}" != "${WORKTREE_REQUESTED}" ]]; then
+  echo "[WARN] Requested WORKTREE is missing required files: ${WORKTREE_REQUESTED}" >&2
+  echo "       Falling back to detected worktree: ${WORKTREE}" >&2
+fi
 
 CONFIG_PATH="${CONFIG_PATH:-${PROJECT_ROOT}/configs/nemorl_osworld_grpo_qwen_vl.yaml}"
 TRAIN_DATA="${TRAIN_DATA:-${PROJECT_ROOT}/data/nemorl/osworld_train.jsonl}"
