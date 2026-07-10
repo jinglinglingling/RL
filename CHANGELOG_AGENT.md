@@ -35,15 +35,16 @@ This file is used as a persistent recovery log so changes can be traced even if 
 - `13667993` (`osw-online-smoke16-newimg-vlcportremap`) -> FAILED
   - `8080` conflict gone after remap.
   - New blocker: host forwarding conflict moved to port `8006` (VNC).
+- `13668535` (`osw-online-smoke17-newimg-portretry`) -> FAILED
+  - Verified generalized remap/retry path is active:
+    - `vlc_port=8080` remapped to `8083`
+    - `vnc_port=8006` remapped to `8007`, then `8008`
+  - Still failed with QEMU hostfwd conflict on remapped VNC port (`8008`).
 
 ### Current Root Cause
 - Apptainer/QEMU hostfwd ports can still race/conflict at VM launch under shared nodes.
-- Broader auto-remap/retry logic is now implemented and needs validation by the next smoke run.
+- Broader auto-remap/retry logic is implemented, but collision can still persist across retries.
 
 ### Next Fix Target
-- Validate the new generalized port remap + retry path with a fresh online smoke run.
-- If conflict still happens, force fully dynamic `APPTAINERENV_USER_PORTS` allocation from provider startup.
-
-### Live Run
-- `13668535` (`osw-online-smoke17-newimg-portretry`) -> RUNNING
-  - Purpose: validate generalized hostfwd conflict retry/remap in `ApptainerProvider`.
+- Move from deterministic incremental remap to randomized/high-range free-port allocation for all forwarded ports.
+- If needed, add launch-time temporary socket reservations to reduce race window before QEMU starts.
