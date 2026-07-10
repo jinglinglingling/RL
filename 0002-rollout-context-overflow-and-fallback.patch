@@ -1,0 +1,185 @@
+From 8d48e97387ef33bde5d93ac555e059fef105f136 Mon Sep 17 00:00:00 2001
+From: Linglin Jing <linglinj@cw-dfw-cs-001-vscode-01.cm.cluster>
+Date: Thu, 9 Jul 2026 17:06:56 -0700
+Subject: [PATCH] Improve rollout robustness for long-context OSWorld runs.
+
+Add context-overflow retries and guaranteed fallback trajectory writes so failed action parsing no longer produces empty datasets that block NeMo-RL conversion.
+---
+ lib_run_single.py  | 42 ++++++++++++++++++++++++++++
+ mm_agents/agent.py | 70 +++++++++++++++++++++++++++++++---------------
+ 2 files changed, 90 insertions(+), 22 deletions(-)
+
+diff --git a/lib_run_single.py b/lib_run_single.py
+index 5d84487c..5c52b93a 100644
+--- a/lib_run_single.py
++++ b/lib_run_single.py
+@@ -27,12 +27,35 @@ def run_single_example(agent, env, example, max_steps, instruction, args, exampl
+     obs = env._get_obs() # Get the initial observation
+     done = False
+     step_idx = 0
++    recorded_step = False
+     env.controller.start_recording()
+     while not done and step_idx < max_steps:
+         response, actions = agent.predict(
+             instruction,
+             obs
+         )
++        if not actions:
++            logger.warning("Agent returned no executable action; writing fallback WAIT step.")
++            action_timestamp = datetime.datetime.now().strftime("%Y%m%d@%H%M%S%f")
++            fallback_step = step_idx + 1
++            screenshot_name = f"step_{fallback_step}_{action_timestamp}.png"
++            with open(os.path.join(example_result_dir, screenshot_name), "wb") as _f:
++                _f.write(obs["screenshot"])
++            with open(os.path.join(example_result_dir, "traj.jsonl"), "a") as f:
++                f.write(json.dumps({
++                    "step_num": fallback_step,
++                    "action_timestamp": action_timestamp,
++                    "action": "WAIT",
++                    "response": response,
++                    "reward": 0.0,
++                    "done": True,
++                    "info": {"fallback_reason": "no_executable_action"},
++                    "screenshot_file": screenshot_name,
++                }))
++                f.write("\n")
++            recorded_step = True
++            done = True
++            break
+         for action in actions:
+             # Capture the timestamp before executing the action
+             action_timestamp = datetime.datetime.now().strftime("%Y%m%d@%H%M%S%f")
+@@ -57,10 +80,29 @@ def run_single_example(agent, env, example, max_steps, instruction, args, exampl
+                     "screenshot_file": f"step_{step_idx + 1}_{action_timestamp}.png"
+                 }))
+                 f.write("\n")
++            recorded_step = True
+             if done:
+                 logger.info("The episode is done.")
+                 break
+         step_idx += 1
++    if not recorded_step:
++        logger.warning("No trajectory step was recorded; writing terminal fallback WAIT step.")
++        action_timestamp = datetime.datetime.now().strftime("%Y%m%d@%H%M%S%f")
++        screenshot_name = f"step_1_{action_timestamp}.png"
++        with open(os.path.join(example_result_dir, screenshot_name), "wb") as _f:
++            _f.write(obs["screenshot"])
++        with open(os.path.join(example_result_dir, "traj.jsonl"), "a") as f:
++            f.write(json.dumps({
++                "step_num": 1,
++                "action_timestamp": action_timestamp,
++                "action": "WAIT",
++                "response": "",
++                "reward": 0.0,
++                "done": True,
++                "info": {"fallback_reason": "empty_trajectory"},
++                "screenshot_file": screenshot_name,
++            }))
++            f.write("\n")
+     time.sleep(20) # Wait for the environment to settle
+     result = env.evaluate()
+     logger.info("Result: %.2f", result)
+diff --git a/mm_agents/agent.py b/mm_agents/agent.py
+index 3cc7b7ca..ace1fc60 100644
+--- a/mm_agents/agent.py
++++ b/mm_agents/agent.py
+@@ -569,6 +569,32 @@ class PromptAgent:
+         max_tries=10
+     )
+     def call_llm(self, payload):
++        def _extract_error(response_obj):
++            try:
++                error_obj = response_obj.json().get("error", {})
++                message = str(error_obj.get("message", response_obj.text))
++                code = error_obj.get("code")
++                return message, code
++            except Exception:
++                return str(response_obj.text), None
++
++        def _is_context_overflow(message, code):
++            message_l = str(message).lower()
++            return (
++                code == "context_length_exceeded"
++                or "context length" in message_l
++                or "max_tokens must be at least 1" in message_l
++                or "decoder prompt is longer than the maximum model length" in message_l
++            )
++
++        def _retry_with_compact_history(endpoint, headers, source_payload):
++            messages = source_payload.get("messages", [])
++            if len(messages) < 2:
++                return None
++            retry_payload = dict(source_payload)
++            retry_payload["messages"] = [messages[0], messages[-1]]
++            retry_payload["max_tokens"] = max(1, min(int(source_payload.get("max_tokens", 1)), 256))
++            return requests.post(endpoint, headers=headers, json=retry_payload)
+ 
+         if payload['model'].startswith("azure-gpt-4o"):
+ 
+@@ -600,20 +626,20 @@ class PromptAgent:
+             )
+ 
+             if response.status_code != 200:
+-                if response.json()['error']['code'] == "context_length_exceeded":
++                error_message, error_code = _extract_error(response)
++                if _is_context_overflow(error_message, error_code):
+                     logger.error("Context length exceeded. Retrying with a smaller context.")
+-                    payload["messages"] = [payload["messages"][0]] + payload["messages"][-1:]
+-                    retry_response = requests.post(
+-                        openai_endpoint,
+-                        headers=headers,
+-                        json=payload
+-                    )
+-                    if retry_response.status_code != 200:
+-                         logger.error(
+-                            "Failed to call LLM even after attempt on shortening the history: " + retry_response.text)
+-                         return ""
++                    retry_response = _retry_with_compact_history(openai_endpoint, headers, payload)
++                    if retry_response is not None and retry_response.status_code == 200:
++                        return retry_response.json()['choices'][0]['message']['content']
++                    if retry_response is not None:
++                        retry_message, _ = _extract_error(retry_response)
++                        logger.error(
++                            "Failed to call LLM even after attempt on shortening the history: " + retry_message
++                        )
++                        return ""
+ 
+-                logger.error("Failed to call LLM: " + response.text)
++                logger.error("Failed to call LLM: " + error_message)
+                 time.sleep(5)
+                 return ""
+             else:
+@@ -635,20 +661,20 @@ class PromptAgent:
+             )
+ 
+             if response.status_code != 200:
+-                if response.json()['error']['code'] == "context_length_exceeded":
++                error_message, error_code = _extract_error(response)
++                if _is_context_overflow(error_message, error_code):
+                     logger.error("Context length exceeded. Retrying with a smaller context.")
+-                    payload["messages"] = [payload["messages"][0]] + payload["messages"][-1:]
+-                    retry_response = requests.post(
+-                        api_url,
+-                        headers=headers,
+-                        json=payload
+-                    )
+-                    if retry_response.status_code != 200:
++                    retry_response = _retry_with_compact_history(api_url, headers, payload)
++                    if retry_response is not None and retry_response.status_code == 200:
++                        return retry_response.json()['choices'][0]['message']['content']
++                    if retry_response is not None:
++                        retry_message, _ = _extract_error(retry_response)
+                         logger.error(
+-                            "Failed to call LLM even after attempt on shortening the history: " + retry_response.text)
++                            "Failed to call LLM even after attempt on shortening the history: " + retry_message
++                        )
+                         return ""
+ 
+-                logger.error("Failed to call LLM: " + response.text)
++                logger.error("Failed to call LLM: " + error_message)
+                 time.sleep(5)
+                 return ""
+             else:
+-- 
+2.34.1
+

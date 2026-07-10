@@ -1,0 +1,505 @@
+From 28d6a2bae0d8c1ba3645cd404504df28b51ba0cc Mon Sep 17 00:00:00 2001
+From: Linglin Jing <linglinj@cw-dfw-cs-001-vscode-01.cm.cluster>
+Date: Thu, 9 Jul 2026 16:38:10 -0700
+Subject: [PATCH] Add Apptainer provider support for OSWorld runtime.
+
+Enable apptainer as a first-class provider and make network/port behavior configurable so OSWorld can run on HPC nodes without Docker while preserving existing workflow compatibility.
+---
+ desktop_env/desktop_env.py                  |   2 +-
+ desktop_env/desktop_env_os_symphony.py      |   2 +-
+ desktop_env/desktop_env_pointer.py          |   2 +
+ desktop_env/providers/__init__.py           |   6 +
+ desktop_env/providers/apptainer/provider.py | 402 ++++++++++++++++++++
+ scripts/python/run_multienv.py              |   6 +-
+ 6 files changed, 417 insertions(+), 3 deletions(-)
+ create mode 100644 desktop_env/providers/apptainer/provider.py
+
+diff --git a/desktop_env/desktop_env.py b/desktop_env/desktop_env.py
+index 098088b3..c38b1681 100644
+--- a/desktop_env/desktop_env.py
++++ b/desktop_env/desktop_env.py
+@@ -152,7 +152,7 @@ class DesktopEnv(gym.Env):
+         # Track whether environment has been used (step/setup) to optimize snapshot revert
+         # docker, aws, gcp, azure are always unused as the emulator starts from a clean state
+         # vmware, virtualbox are always used as the emulator starts from a dirty state
+-        if self.provider_name in {"docker", "aws", "gcp", "azure", "aliyun", "volcengine", "fastvm"}:
++        if self.provider_name in {"docker", "apptainer", "aws", "gcp", "azure", "aliyun", "volcengine", "fastvm"}:
+             self.is_environment_used = False
+         elif self.provider_name in {"vmware", "virtualbox"}:
+             self.is_environment_used = True
+diff --git a/desktop_env/desktop_env_os_symphony.py b/desktop_env/desktop_env_os_symphony.py
+index 53725862..243d1d7f 100644
+--- a/desktop_env/desktop_env_os_symphony.py
++++ b/desktop_env/desktop_env_os_symphony.py
+@@ -86,7 +86,7 @@ class DesktopEnv(gym.Env):
+         # Track whether environment has been used (step/setup) to optimize snapshot revert
+         # docker, aws, gcp, azure are always unused as the emulator starts from a clean state
+         # vmware, virtualbox are always used as the emulator starts from a dirty state
+-        if self.provider_name in {"docker", "aws", "gcp", "azure", "aliyun", "volcengine"}:
++        if self.provider_name in {"docker", "apptainer", "aws", "gcp", "azure", "aliyun", "volcengine", "fastvm"}:
+             self.is_environment_used = False
+         elif self.provider_name in {"vmware", "virtualbox"}:
+             self.is_environment_used = True
+diff --git a/desktop_env/desktop_env_pointer.py b/desktop_env/desktop_env_pointer.py
+index 64881fdf..8d8f6b13 100644
+--- a/desktop_env/desktop_env_pointer.py
++++ b/desktop_env/desktop_env_pointer.py
+@@ -168,11 +168,13 @@ class DesktopEnv(gym.Env):
+         # vmware, virtualbox are always used as the emulator starts from a dirty state
+         if self.provider_name in {
+             "docker",
++            "apptainer",
+             "aws",
+             "gcp",
+             "azure",
+             "aliyun",
+             "volcengine",
++            "fastvm",
+         }:
+             self.is_environment_used = False
+         elif self.provider_name in {"vmware", "virtualbox"}:
+diff --git a/desktop_env/providers/__init__.py b/desktop_env/providers/__init__.py
+index 8e2c7d4e..575bc03d 100644
+--- a/desktop_env/providers/__init__.py
++++ b/desktop_env/providers/__init__.py
+@@ -31,6 +31,12 @@ def create_vm_manager_and_provider(provider_name: str, region: str, use_proxy: b
+         from desktop_env.providers.docker.manager import DockerVMManager
+         from desktop_env.providers.docker.provider import DockerProvider
+         return DockerVMManager(), DockerProvider(region)
++    elif provider_name == "apptainer":
++        # Reuse DockerVMManager for qcow2 download/lookup; only runtime launcher changes.
++        from desktop_env.providers.docker.manager import DockerVMManager
++        from desktop_env.providers.apptainer.provider import ApptainerProvider
++
++        return DockerVMManager(), ApptainerProvider(region)
+     elif provider_name == "aliyun":
+         from desktop_env.providers.aliyun.manager import AliyunVMManager
+         from desktop_env.providers.aliyun.provider import AliyunProvider
+diff --git a/desktop_env/providers/apptainer/provider.py b/desktop_env/providers/apptainer/provider.py
+new file mode 100644
+index 00000000..68e18837
+--- /dev/null
++++ b/desktop_env/providers/apptainer/provider.py
+@@ -0,0 +1,402 @@
++import logging
++import os
++import platform
++import re
++import shutil
++import subprocess
++import time
++from pathlib import Path
++from typing import Optional, TextIO
++
++import psutil
++import requests
++from filelock import FileLock
++
++from desktop_env.providers.base import Provider
++
++logger = logging.getLogger("desktopenv.providers.apptainer.ApptainerProvider")
++logger.setLevel(logging.INFO)
++
++WAIT_TIME = 3
++RETRY_INTERVAL = 1
++LOCK_TIMEOUT = 10
++
++DEFAULT_SERVER_PORT = int(os.environ.get("OSWORLD_SERVER_PORT", "5000"))
++DEFAULT_CHROMIUM_PORT = int(os.environ.get("OSWORLD_CHROMIUM_PORT", "9222"))
++DEFAULT_VNC_PORT = int(os.environ.get("OSWORLD_VNC_PORT", "8006"))
++DEFAULT_VLC_PORT = int(os.environ.get("OSWORLD_VLC_PORT", "8080"))
++DEFAULT_IMAGE = os.environ.get(
++    "OSWORLD_APPTAINER_IMAGE",
++    os.environ.get("OSWORLD_SIF_IMAGE", "docker://happysixd/osworld-docker:latest"),
++)
++
++
++class PortAllocationError(Exception):
++    pass
++
++
++def _env_flag(name: str, default: str = "0") -> bool:
++    value = os.environ.get(name, default)
++    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
++
++
++class ApptainerProvider(Provider):
++    def __init__(self, region: str):
++        super().__init__(region=region)
++        self.apptainer_bin = self._resolve_apptainer_bin()
++        self.apptainer_image = os.environ.get(
++            "OSWORLD_APPTAINER_IMAGE",
++            os.environ.get("OSWORLD_SIF_IMAGE", DEFAULT_IMAGE),
++        )
++        self.server_port = DEFAULT_SERVER_PORT
++        self.vnc_port = DEFAULT_VNC_PORT
++        self.chromium_port = DEFAULT_CHROMIUM_PORT
++        self.vlc_port = DEFAULT_VLC_PORT
++        self.process: Optional[subprocess.Popen] = None
++        self.log_file: Optional[Path] = None
++        self._log_handle: Optional[TextIO] = None
++        self.environment = {"DISK_SIZE": "32G", "RAM_SIZE": "4G", "CPU_CORES": "4"}
++        self.use_fakeroot = _env_flag("OSWORLD_APPTAINER_USE_FAKEROOT", "1")
++        self.patch_nginx_port = _env_flag("OSWORLD_APPTAINER_PATCH_NGINX_PORT", "1")
++        self.patch_network_ports = _env_flag("OSWORLD_APPTAINER_PATCH_NETWORK_PORTS", "1")
++
++        temp_dir = Path(os.getenv("TEMP") if platform.system() == "Windows" else "/tmp")
++        self.lock_file = temp_dir / "apptainer_port_allocation.lck"
++        self.lock_file.parent.mkdir(parents=True, exist_ok=True)
++
++    def _resolve_apptainer_bin(self) -> str:
++        candidate_bins = [
++            os.environ.get("OSWORLD_APPTAINER_BIN"),
++            os.environ.get("APPTAINER_BIN"),
++            shutil.which("apptainer"),
++            os.path.expanduser("~/local/apptainer-1.4.1/extract/usr/bin/apptainer"),
++        ]
++        for candidate in candidate_bins:
++            if candidate and os.path.isfile(candidate) and os.access(candidate, os.X_OK):
++                return candidate
++        raise RuntimeError(
++            "Apptainer binary not found. Set OSWORLD_APPTAINER_BIN or APPTAINER_BIN, "
++            "or install apptainer in PATH."
++        )
++
++    def _get_used_ports(self):
++        return set(conn.laddr.port for conn in psutil.net_connections() if conn.laddr)
++
++    def _ensure_ports_available(self):
++        used_ports = self._get_used_ports()
++        required_ports = [self.server_port, self.chromium_port, self.vnc_port]
++        conflicts = [port for port in required_ports if port in used_ports]
++        if conflicts:
++            raise PortAllocationError(
++                "Required OSWorld ports already in use: "
++                f"{conflicts}. Set OSWORLD_SERVER_PORT/OSWORLD_CHROMIUM_PORT/"
++                "OSWORLD_VNC_PORT/OSWORLD_VLC_PORT to free ports."
++            )
++        if self.vlc_port in used_ports:
++            logger.warning(
++                "OSWORLD_VLC_PORT=%s already in use; continuing without strict VLC port check.",
++                self.vlc_port,
++            )
++
++    def _wait_for_vm_ready(self, timeout: int = 300):
++        start_time = time.time()
++        url = f"http://localhost:{self.server_port}/screenshot"
++        while time.time() - start_time < timeout:
++            if self.process is not None and self.process.poll() is not None:
++                raise RuntimeError(
++                    "Apptainer process exited before readiness probe succeeded "
++                    f"(exit_code={self.process.returncode}). "
++                    f"Log tail:\n{self._read_process_log_tail()}"
++                )
++            try:
++                response = requests.get(url, timeout=(10, 10))
++                if response.status_code == 200:
++                    return True
++            except Exception:
++                pass
++            logger.info("Checking if apptainer-backed VM is ready...")
++            time.sleep(RETRY_INTERVAL)
++        raise TimeoutError(
++            f"VM failed to become ready within timeout period (url={url}). "
++            f"Apptainer log tail:\n{self._read_process_log_tail()}"
++        )
++
++    def _read_process_log_tail(self, max_bytes: int = 8000) -> str:
++        if not self.log_file or not self.log_file.exists():
++            return "<apptainer log unavailable>"
++        try:
++            data = self.log_file.read_bytes()
++            if len(data) > max_bytes:
++                data = data[-max_bytes:]
++            return data.decode("utf-8", errors="replace")
++        except Exception as e:
++            return f"<failed to read apptainer log: {e}>"
++
++    def _write_unprivileged_nginx_site(self, out_dir: Path) -> Path:
++        """Create nginx config that avoids binding privileged port 80."""
++        override = out_dir / "osworld-nginx-web.conf"
++        override.write_text(
++            f"""server {{
++    listen {self.vnc_port} default_server;
++
++    autoindex on;
++    tcp_nodelay on;
++    server_tokens off;
++    absolute_redirect off;
++
++    error_log /dev/null;
++    access_log /dev/null;
++
++    include /etc/nginx/mime.types;
++    add_header Cache-Control "no-cache";
++
++    location / {{
++      root /run/shm;
++      if ( -f /run/shm/index.html) {{ break; }}
++      try_files /index.html @vnc;
++    }}
++
++    location @vnc {{
++      root /usr/share/novnc;
++      index vnc.html;
++      if ($request_uri = "/") {{
++        return 301 /?resize=scale&reconnect=true&autoconnect=true;
++      }}
++    }}
++
++    location /websockify {{
++      proxy_http_version 1.1;
++      proxy_set_header Connection 'upgrade';
++      proxy_set_header Upgrade $http_upgrade;
++      proxy_buffering off;
++      proxy_read_timeout 3600s;
++      proxy_send_timeout 3600s;
++      proxy_pass http://127.0.0.1:5700/;
++    }}
++}}
++""",
++            encoding="utf-8",
++        )
++        return override
++
++    def _read_container_file(self, container_path: str) -> str:
++        cmd = [
++            self.apptainer_bin,
++            "exec",
++            self.apptainer_image,
++            "sh",
++            "-lc",
++            f"awk '{{print}}' {container_path}",
++        ]
++        result = subprocess.run(
++            cmd,
++            check=True,
++            text=True,
++            capture_output=True,
++        )
++        return result.stdout
++
++    def _write_network_port_override(self, out_dir: Path) -> Path:
++        """Patch /run/network.sh so SSH/RDP host forwards avoid privileged ports."""
++        network_script = self._read_container_file("/run/network.sh")
++        replacement_fn = """getUserPorts() {
++  local args=""
++  local list=$1
++  local ssh_host="${SSH_FORWARD_PORT:-22}"
++  local rdp_host="${RDP_FORWARD_PORT:-3389}"
++  local ssh_guest="22"
++  local rdp_guest="3389"
++
++  [ -z "$list" ] && list="$ssh_host:$ssh_guest,$rdp_host:$rdp_guest" || list+=",$ssh_host:$ssh_guest,$rdp_host:$rdp_guest"
++
++  list="${list//,/ }"
++  list="${list## }"
++  list="${list%% }"
++
++  for entry in $list; do
++    local host_port guest_port
++    if [[ "$entry" == *:* ]]; then
++      host_port="${entry%%:*}"
++      guest_port="${entry##*:}"
++    else
++      host_port="$entry"
++      guest_port="$entry"
++    fi
++    args+="hostfwd=tcp::$host_port-$VM_NET_IP:$guest_port,"
++  done
++
++  echo "${args%?}"
++  return 0
++}
++"""
++        patched = re.sub(
++            r"getUserPorts\(\) \{\n.*?\n\}\n\ngetHostPorts\(\) \{",
++            replacement_fn + "\ngetHostPorts() {",
++            network_script,
++            flags=re.S,
++        )
++        if patched == network_script:
++            raise RuntimeError("Failed to patch /run/network.sh getUserPorts() function.")
++
++        override = out_dir / "osworld-network.sh"
++        override.write_text(patched, encoding="utf-8")
++        return override
++
++    def start_emulator(self, path_to_vm: str, headless: bool, os_type: str):
++        lock = FileLock(str(self.lock_file), timeout=LOCK_TIMEOUT)
++
++        try:
++            with lock:
++                self._ensure_ports_available()
++
++                env = os.environ.copy()
++                env["APPTAINERENV_DISK_SIZE"] = self.environment["DISK_SIZE"]
++                env["APPTAINERENV_RAM_SIZE"] = self.environment["RAM_SIZE"]
++                env["APPTAINERENV_CPU_CORES"] = self.environment["CPU_CORES"]
++                env["APPTAINERENV_NETWORK"] = os.environ.get(
++                    "OSWORLD_APPTAINER_NETWORK", "user"
++                )
++                env["APPTAINERENV_USER_PORTS"] = os.environ.get(
++                    "OSWORLD_APPTAINER_USER_PORTS",
++                    f"{self.server_port},{self.chromium_port},{self.vnc_port},{self.vlc_port}",
++                )
++                ssh_forward_port = os.environ.get("OSWORLD_APPTAINER_SSH_FORWARD_PORT", "")
++                if not ssh_forward_port:
++                    ssh_forward_port = str(self.vnc_port + 1000)
++                rdp_forward_port = os.environ.get("OSWORLD_APPTAINER_RDP_FORWARD_PORT", "")
++                if not rdp_forward_port:
++                    rdp_forward_port = str(self.vnc_port + 2000)
++                env["APPTAINERENV_SSH_FORWARD_PORT"] = ssh_forward_port
++                env["APPTAINERENV_RDP_FORWARD_PORT"] = rdp_forward_port
++
++                kvm_mode = os.environ.get("OSWORLD_APPTAINER_KVM", "")
++                if kvm_mode:
++                    env["APPTAINERENV_KVM"] = kvm_mode
++                    logger.info("Using explicit OSWORLD_APPTAINER_KVM=%s", kvm_mode)
++                elif self.use_fakeroot:
++                    env["APPTAINERENV_KVM"] = "N"
++                    logger.info("Fakeroot mode detected; disabling KVM acceleration (KVM=N).")
++                elif not os.path.exists("/dev/kvm") or not os.access("/dev/kvm", os.R_OK | os.W_OK):
++                    env["APPTAINERENV_KVM"] = "N"
++                    logger.warning(
++                        "KVM device unavailable/inaccessible, running without hardware acceleration (slower)"
++                    )
++                else:
++                    logger.info("KVM device found and accessible, using hardware acceleration")
++
++                vm_path_abs = os.path.abspath(path_to_vm)
++                if not os.path.exists(vm_path_abs):
++                    raise FileNotFoundError(f"VM disk image not found: {vm_path_abs}")
++
++                storage_dir = os.environ.get(
++                    "OSWORLD_APPTAINER_STORAGE_DIR", os.path.dirname(vm_path_abs)
++                )
++                storage_dir_abs = os.path.abspath(os.path.expanduser(storage_dir))
++                os.makedirs(storage_dir_abs, exist_ok=True)
++
++                bind_args = [
++                    "--bind",
++                    f"{vm_path_abs}:/System.qcow2:ro",
++                    "--bind",
++                    f"{storage_dir_abs}:/storage",
++                ]
++                extra_binds = os.environ.get("OSWORLD_APPTAINER_EXTRA_BINDS", "")
++                if extra_binds:
++                    for entry in extra_binds.split(","):
++                        entry = entry.strip()
++                        if entry:
++                            bind_args.extend(["--bind", entry])
++
++                log_dir = Path(
++                    os.environ.get(
++                        "OSWORLD_APPTAINER_LOG_DIR",
++                        os.path.join(os.getcwd(), "logs"),
++                    )
++                )
++                log_dir.mkdir(parents=True, exist_ok=True)
++                self.log_file = log_dir / f"osworld-apptainer-{os.getpid()}-{int(time.time())}.log"
++                self._log_handle = self.log_file.open("w", encoding="utf-8")
++
++                if self.patch_nginx_port:
++                    nginx_override = self._write_unprivileged_nginx_site(log_dir)
++                    bind_args.extend(
++                        ["--bind", f"{nginx_override}:/etc/nginx/sites-enabled/web.conf:ro"]
++                    )
++                if self.patch_network_ports:
++                    network_override = self._write_network_port_override(log_dir)
++                    bind_args.extend(["--bind", f"{network_override}:/run/network.sh:ro"])
++
++                cmd = [
++                    self.apptainer_bin,
++                    "run",
++                    *(["--fakeroot"] if self.use_fakeroot else []),
++                    "--writable-tmpfs",
++                    *bind_args,
++                    self.apptainer_image,
++                ]
++                logger.info("Starting apptainer VM: %s", " ".join(cmd))
++                self.process = subprocess.Popen(
++                    cmd,
++                    stdout=self._log_handle,
++                    stderr=subprocess.STDOUT,
++                    env=env,
++                )
++
++            logger.info(
++                "Started apptainer process pid=%s server=%s chrome=%s vnc=%s vlc=%s log=%s",
++                self.process.pid if self.process else None,
++                self.server_port,
++                self.chromium_port,
++                self.vnc_port,
++                self.vlc_port,
++                self.log_file,
++            )
++            self._wait_for_vm_ready()
++        except Exception as e:
++            if self.process and self.process.poll() is None:
++                try:
++                    self.process.terminate()
++                    self.process.wait(timeout=10)
++                except Exception:
++                    self.process.kill()
++            self.process = None
++            if self._log_handle:
++                self._log_handle.close()
++                self._log_handle = None
++            raise e
++
++    def get_ip_address(self, path_to_vm: str) -> str:
++        if not self.process:
++            raise RuntimeError("VM not started - apptainer process missing")
++        if self.process.poll() is not None:
++            raise RuntimeError(
++                "Apptainer process exited before use; "
++                f"see provider log: {self.log_file}"
++            )
++        return f"localhost:{self.server_port}:{self.chromium_port}:{self.vnc_port}:{self.vlc_port}"
++
++    def save_state(self, path_to_vm: str, snapshot_name: str):
++        raise NotImplementedError("Snapshots not available for apptainer provider")
++
++    def revert_to_snapshot(self, path_to_vm: str, snapshot_name: str):
++        self.stop_emulator(path_to_vm)
++
++    def stop_emulator(self, path_to_vm: str, region=None, *args, **kwargs):
++        if self.process:
++            logger.info("Stopping apptainer VM process...")
++            try:
++                if self.process.poll() is None:
++                    self.process.terminate()
++                    self.process.wait(timeout=15)
++                time.sleep(WAIT_TIME)
++            except Exception as e:
++                logger.error(f"Error stopping apptainer process: {e}")
++                try:
++                    self.process.kill()
++                except Exception:
++                    pass
++            finally:
++                self.process = None
++                if self._log_handle:
++                    self._log_handle.close()
++                self._log_handle = None
+diff --git a/scripts/python/run_multienv.py b/scripts/python/run_multienv.py
+index 4f330789..0bd0db5a 100644
+--- a/scripts/python/run_multienv.py
++++ b/scripts/python/run_multienv.py
+@@ -91,7 +91,11 @@ def config() -> argparse.Namespace:
+         "--region", type=str, default="us-east-1", help="AWS region for the VM"
+     )
+     parser.add_argument(
+-        "--provider_name", type=str, default="docker", choices=["aws", "virtualbox", "vmware", "docker", "azure"], help="Provider name"
++        "--provider_name",
++        type=str,
++        default="docker",
++        choices=["aws", "virtualbox", "vmware", "docker", "azure", "fastvm", "aliyun", "volcengine", "apptainer"],
++        help="Provider name",
+     )
+     parser.add_argument(
+         "--client_password", type=str, default="", help="Client password"
+-- 
+2.34.1
+
