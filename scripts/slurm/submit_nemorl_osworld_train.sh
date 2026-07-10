@@ -77,6 +77,10 @@ export CONTAINER="${CONTAINER:-/lustre/fs1/portfolios/coreai/projects/coreai_dla
 export CONTAINER_INIT_SCRIPT="${CONTAINER_INIT_SCRIPT:-/lustre/fsw/portfolios/coreai/projects/coreai_dlalgo_nemorl/users/linglinj/Nemo-RL-Library/Nemo-RL-Super/DPO/container_init.sh}"
 export NRL_REPO_DIR="${NRL_REPO_DIR:-${WORKTREE}}"
 export NRL_FORCE_REBUILD_VENVS="${NRL_FORCE_REBUILD_VENVS:-true}"
+export NRL_WORKER_RAY_VERSION="${NRL_WORKER_RAY_VERSION:-2.54.0}"
+# Some local NeMo-RL worktrees intentionally diverge from uv.lock.
+# Set to 1 to force strict lockfile enforcement.
+export NRL_UV_RUN_LOCKED="${NRL_UV_RUN_LOCKED:-0}"
 # Keep parity with PPO smoke path: this image often misses tensordict for driver import.
 # Install only the minimal direct packages to avoid expensive resolver/network churn.
 export SETUP_COMMAND="${SETUP_COMMAND:-/opt/nemo_rl_venv/bin/pip install --quiet --no-input --no-deps tensordict pyvers}"
@@ -195,7 +199,7 @@ else
   NEMORL_OVERRIDES="${USER_NEMORL_OVERRIDES}"
 fi
 
-RUN_SCRIPT="${PROJECT_ROOT}/scripts/run_nemorl_osworld_grpo.sh"
+RUN_SCRIPT="${RUN_SCRIPT:-${PROJECT_ROOT}/scripts/run_nemorl_osworld_grpo.sh}"
 
 if [[ ! -f "${CONFIG_PATH}" ]]; then
   echo "[FATAL] Config not found: ${CONFIG_PATH}" >&2
@@ -240,6 +244,7 @@ mkdir -p '${HF_HOME}' '${HF_MODULES_CACHE}' '${NRL_MEGATRON_CHECKPOINT_DIR}' '${
 if [[ -f '${HF_TOKEN_FILE}' ]]; then _hf_token=\"\$(tr -d '\r\n' < '${HF_TOKEN_FILE}')\"; export HF_TOKEN=\"\${_hf_token}\" HUGGING_FACE_HUB_TOKEN=\"\${_hf_token}\" HUGGINGFACE_HUB_TOKEN=\"\${_hf_token}\"; unset _hf_token; fi && \
 export HF_HUB_DISABLE_IMPLICIT_TOKEN=0 && \
 export NEMORL_ROOT='${WORKTREE}' PYTHON_BIN='${PYTHON_BIN}' \
+NRL_WORKER_RAY_VERSION='${NRL_WORKER_RAY_VERSION}' \
 TRAIN_DATA='${TRAIN_DATA}' VAL_DATA='${VAL_DATA}' \
 CHECKPOINT_DIR='${CHECKPOINT_DIR}' LOG_DIR='${LOG_DIR}' CONFIG_PATH='${CONFIG_PATH}' && \
 bash '${RUN_SCRIPT}' ${NEMORL_OVERRIDES}"
@@ -261,6 +266,8 @@ echo "  Val data:     ${VAL_DATA}"
 echo "  Results dir:  ${RESULTS_DIR}"
 echo "  Container:    ${CONTAINER}"
 echo "  Setup cmd:    ${SETUP_COMMAND}"
+echo "  Worker Ray:   ${NRL_WORKER_RAY_VERSION}"
+echo "  UV --locked:  ${NRL_UV_RUN_LOCKED}"
 echo "  Profile:      ${TRAIN_PROFILE}"
 echo "  HF token:     ${HF_TOKEN_FILE}"
 if [[ "${TRAIN_PROFILE}" == "stable-1g-3b-local" ]]; then

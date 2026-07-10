@@ -1,0 +1,77 @@
+defaults:
+  - ../../Nemo-RL-main-1/RL/examples/configs/recipes/vlm/vlm_grpo-qwen2.5-omni-3b-avqa-1n8g-megatron.v1.yaml
+
+grpo:
+  max_num_steps: 500
+  num_generations_per_prompt: 4
+  val_period: 20
+  val_at_start: true
+  max_val_samples: null
+  val_batch_size: null
+
+checkpointing:
+  enabled: true
+  checkpoint_dir: ./outputs/checkpoints/osworld_online_grpo_qwen_vl
+  keep_top_k: 5
+  save_period: 20
+
+policy:
+  model_name: Qwen/Qwen2.5-Omni-3B
+  train_global_batch_size: 16
+  generation_batch_size: 8
+  logprob_batch_size: 1
+  max_total_sequence_length: 3072
+  generation:
+    max_new_tokens: 64
+    vllm_cfg:
+      skip_tokenizer_init: false
+      tensor_parallel_size: 2
+      gpu_memory_utilization: 0.7
+      max_model_len: 3072
+
+data:
+  # NemoGymDataset manages prompt/trajectory construction at rollout time.
+  max_input_seq_length: null
+  num_workers: 0
+  train:
+    dataset_name: NemoGymDataset
+    data_path: ./data/nemogym/osworld_online_train.jsonl
+    split_validation_size: 0
+    seed: 42
+  validation:
+    dataset_name: NemoGymDataset
+    data_path: ./data/nemogym/osworld_online_val.jsonl
+  default:
+    prompt_file: null
+    system_prompt_file: null
+    processor: nemo_gym_data_processor
+    env_name: nemo_gym
+
+env:
+  should_use_nemo_gym: true
+  should_log_nemo_gym_responses: true
+  nemo_gym:
+    # Keep Gym server ports separate from vLLM and Ray worker ranges.
+    port_range_low: 15001
+    port_range_high: 20000
+    rollout_max_attempts_to_avoid_lp_nan: 1
+    is_trajectory_collection: false
+    config_paths:
+      - responses_api_models/vllm_model/configs/vllm_model_for_training.yaml
+      - resources_servers/osworld_vlm/configs/osworld_vlm.yaml
+    policy_model:
+      responses_api_models:
+        vllm_model:
+          uses_reasoning_parser: false
+          extra_body:
+            chat_template_kwargs:
+              enable_thinking: false
+
+logger:
+  log_dir: ./outputs/logs/osworld_online_grpo_qwen_vl
+  wandb_enabled: false
+  tensorboard_enabled: true
+  swanlab_enabled: false
+
+cluster:
+  gpus_per_node: 8
