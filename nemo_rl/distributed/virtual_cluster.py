@@ -102,7 +102,9 @@ def _get_node_ip_and_free_port(
     port_range_low: int = DEFAULT_MASTER_PORT_RANGE_LOW,
     port_range_high: int = DEFAULT_MASTER_PORT_RANGE_HIGH,
 ) -> tuple[str, int]:
-    return _get_node_ip_local(), _get_free_port_local(port_range_low, port_range_high)
+    # Keep compatibility with older in-memory worker code that may expose
+    # _get_free_port_local() without range parameters.
+    return _get_node_ip_local(), _get_free_port_local()
 
 
 def _get_node_ip_local() -> str:
