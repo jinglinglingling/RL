@@ -186,3 +186,37 @@ bash scripts/run_nemorl_osworld_grpo.sh \
   grpo.max_num_steps=100 \
   policy.train_global_batch_size=8
 ```
+
+## Reference: Two-stage SWE RL (SWE1 pivot + SWE2 agentic)
+
+Based on the recent Gym-side SWE updates, a practical two-stage SWE RL recipe can be summarized as:
+
+### SWE1: Pivot RL (single-step, local decision optimization)
+
+- Core environment/verifier is `resources_servers/swe_pivot`.
+- Typical server+agent config is `resources_servers/swe_pivot/configs/swe_pivot.yaml`.
+- Rollouts are single-step (`max_steps: 1`) next-action decisions at curated pivot turns.
+- Training signal comes from action-level verification (tool category / target / argument similarity), not full end-to-end task completion.
+- Goal: quickly improve local fix-design decisions before expensive long-horizon rollouts.
+
+### SWE2: Agentic RL (full-horizon, end-to-end issue solving)
+
+- Core agent is `responses_api_agents/swe_agents` (OpenHands-based harness).
+- Typical training config is `responses_api_agents/swe_agents/configs/swebench_openhands_training.yaml`.
+- Each sample runs a full coding trajectory (multi-turn tool use inside task containers), then executes benchmark harness tests.
+- Reward is end-to-end resolved/not-resolved style signal (`0/1`) after patch evaluation.
+- Goal: optimize full issue-resolution behavior under realistic agentic execution.
+
+### Is this based on `mini-swe-agentic`?
+
+- Not directly for the two-stage recipe above.
+- In the current Gym tree, the two stages map to `swe_pivot` + `swe_agents` (OpenHands path).
+- `responses_api_agents/mini_swe_agent` exists as a separate Mini-SWE-Agent integration, but it is not the core implementation used by the SWE1+SWE2 path above.
+
+### Key differences vs our current OSWorld online GRPO
+
+- OSWorld currently uses `resources_servers/osworld_vlm` + `responses_api_agents/osworld_vlm_agent`.
+- OSWorld is multimodal GUI interaction (screenshot observation + desktop actions), while SWE1/2 is code-agent/tool-call centric.
+- OSWorld reward is currently task-evaluation driven (mostly sparse `0/1` from `DesktopEnv.evaluate()` in our smoke runs).
+- SWE1 adds dense local reward shaping at pivot turns; OSWorld currently does not have an equivalent pivot verifier stage.
+- SWE2 and OSWorld are both multi-turn agentic RL in NeMo-Gym, but they differ in environment dynamics, action space, and verifier granularity.

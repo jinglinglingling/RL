@@ -83,7 +83,21 @@ export NRL_WORKER_RAY_VERSION="${NRL_WORKER_RAY_VERSION:-2.54.0}"
 export NRL_UV_RUN_LOCKED="${NRL_UV_RUN_LOCKED:-0}"
 # Keep parity with PPO smoke path: this image often misses tensordict for driver import.
 # Install only the minimal direct packages to avoid expensive resolver/network churn.
-export SETUP_COMMAND="${SETUP_COMMAND:-/opt/nemo_rl_venv/bin/pip install --quiet --no-input --no-deps tensordict pyvers}"
+BASE_SETUP_COMMAND="${SETUP_COMMAND:-/opt/nemo_rl_venv/bin/pip install --quiet --no-input --no-deps tensordict pyvers}"
+RAY_ALIGN_COMMAND=""
+if [[ -n "${NRL_WORKER_RAY_VERSION}" ]]; then
+  # Keep the Ray daemon (head/worker) and runtime-env venvs on the same Ray version.
+  # ray.sub runs SETUP_COMMAND before ray start on every node.
+  # The container can have a partially broken Ray install (missing files), where
+  # pip uninstall/force-reinstall fails before ray start. Proactively remove any
+  # stale ray package artifacts, then install a clean target version.
+  RAY_ALIGN_COMMAND="rm -rf /opt/nemo_rl_venv/lib/python*/site-packages/ray /opt/nemo_rl_venv/lib/python*/site-packages/ray-*.dist-info /opt/nemo_rl_venv/lib/python*/site-packages/ray-*.egg-info && /opt/nemo_rl_venv/bin/pip install --quiet --no-input --upgrade --no-cache-dir ray==${NRL_WORKER_RAY_VERSION}"
+fi
+if [[ -n "${RAY_ALIGN_COMMAND}" && "${BASE_SETUP_COMMAND}" != *"ray=="* ]]; then
+  export SETUP_COMMAND="${BASE_SETUP_COMMAND} && ${RAY_ALIGN_COMMAND}"
+else
+  export SETUP_COMMAND="${BASE_SETUP_COMMAND}"
+fi
 
 export MOUNTS="${MOUNTS:-/lustre:/lustre,/home:/home}"
 if [[ -f "${HOME}/.netrc" ]] && [[ "${MOUNTS}" != *"/root/.netrc"* ]]; then
@@ -114,6 +128,8 @@ if [[ "${TRAIN_PROFILE}" == "stable-1g-3b-local" ]]; then
   STABLE_MAX_STEPS="${STABLE_MAX_STEPS:-5}"
   STABLE_MAX_EPOCHS="${STABLE_MAX_EPOCHS:-${STABLE_MAX_STEPS}}"
   STABLE_MODEL_REPO="${STABLE_MODEL_REPO:-Qwen/Qwen2.5-Omni-3B}"
+  STABLE_NUM_PROMPTS_PER_STEP="${STABLE_NUM_PROMPTS_PER_STEP:-1}"
+  STABLE_NUM_GENERATIONS_PER_PROMPT="${STABLE_NUM_GENERATIONS_PER_PROMPT:-4}"
   # Multimodal prompts are longer than text-only prompts.
   # Keep enough context to avoid prompt-length failures while capping memory.
   STABLE_MAX_TOTAL_SEQUENCE_LENGTH="${STABLE_MAX_TOTAL_SEQUENCE_LENGTH:-2944}"
@@ -149,8 +165,9 @@ if [[ "${TRAIN_PROFILE}" == "stable-1g-3b-local" ]]; then
   fi
 
   if [[ -z "${MODEL_SNAPSHOT_DIR}" || ! -d "${MODEL_SNAPSHOT_DIR}" ]]; then
+    expected_snapshot_repo="${STABLE_MODEL_REPO//\//--}"
     echo "[FATAL] TRAIN_PROFILE=${TRAIN_PROFILE} requires a local model snapshot." >&2
-    echo "        Expected under: ${HF_HOME}/hub/models--Qwen--Qwen2.5-Omni-3B/snapshots/" >&2
+    echo "        Expected under: ${HF_HOME}/hub/models--${expected_snapshot_repo}/snapshots/" >&2
     echo "        Set MODEL_SNAPSHOT_DIR explicitly, or switch to TRAIN_PROFILE=custom." >&2
     exit 1
   fi
@@ -158,8 +175,8 @@ if [[ "${TRAIN_PROFILE}" == "stable-1g-3b-local" ]]; then
   PROFILE_OVERRIDES="\
 grpo.max_num_epochs=${STABLE_MAX_EPOCHS} \
 grpo.max_num_steps=${STABLE_MAX_STEPS} \
-grpo.num_prompts_per_step=1 \
-grpo.num_generations_per_prompt=1 \
+grpo.num_prompts_per_step=${STABLE_NUM_PROMPTS_PER_STEP} \
+grpo.num_generations_per_prompt=${STABLE_NUM_GENERATIONS_PER_PROMPT} \
 grpo.val_at_start=false \
 grpo.val_period=1000 \
 env.vlm.num_workers=1 \

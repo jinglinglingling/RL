@@ -6,7 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 PYTHON_BIN="${PYTHON_BIN:-python}"
-TEST_ALL_META_PATH="${TEST_ALL_META_PATH:-${PROJECT_ROOT}/configs/osworld_test_all_smoke.json}"
+TEST_ALL_META_PATH="${TEST_ALL_META_PATH:-${PROJECT_ROOT}/configs/osworld_test_all_smoke20.json}"
 TEST_CONFIG_BASE_DIR="${TEST_CONFIG_BASE_DIR:-${PROJECT_ROOT}/third_party/OSWorld/evaluation_examples}"
 TRAIN_DATA="${TRAIN_DATA:-${PROJECT_ROOT}/data/nemogym/osworld_online_train.jsonl}"
 VAL_DATA="${VAL_DATA:-${PROJECT_ROOT}/data/nemogym/osworld_online_val.jsonl}"

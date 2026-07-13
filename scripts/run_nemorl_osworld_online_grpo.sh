@@ -37,6 +37,47 @@ echo "CHECKPOINT:   ${CHECKPOINT_DIR}"
 echo "LOG_DIR:      ${LOG_DIR}"
 echo
 
+# Pick a per-job master port subrange to reduce cross-job TCPStore collisions.
+MASTER_PORT_RANGE_LOW="${NRL_MASTER_PORT_RANGE_LOW:-}"
+MASTER_PORT_RANGE_HIGH="${NRL_MASTER_PORT_RANGE_HIGH:-}"
+if [[ -z "${MASTER_PORT_RANGE_LOW}" || -z "${MASTER_PORT_RANGE_HIGH}" ]]; then
+  base="${NRL_MASTER_PORT_BASE:-24000}"
+  cap="${NRL_MASTER_PORT_CAP:-32000}"
+  block="${NRL_MASTER_PORT_BLOCK_SIZE:-64}"
+  seed="${SLURM_JOB_ID:-$RANDOM}"
+  if ! [[ "${seed}" =~ ^[0-9]+$ ]]; then
+    seed="$(date +%s)"
+  fi
+  if (( block <= 1 )); then
+    block=64
+  fi
+  if (( cap <= base )); then
+    cap=$((base + block))
+  fi
+
+  span=$((cap - base))
+  slots=$((span / block))
+  if (( slots <= 0 )); then
+    MASTER_PORT_RANGE_LOW="${base}"
+    MASTER_PORT_RANGE_HIGH="${cap}"
+  else
+    idx=$((seed % slots))
+    MASTER_PORT_RANGE_LOW=$((base + idx * block))
+    MASTER_PORT_RANGE_HIGH=$((MASTER_PORT_RANGE_LOW + block))
+    if (( MASTER_PORT_RANGE_HIGH > cap )); then
+      MASTER_PORT_RANGE_HIGH="${cap}"
+    fi
+  fi
+fi
+if (( MASTER_PORT_RANGE_LOW < 1024 )); then
+  MASTER_PORT_RANGE_LOW=1024
+fi
+if (( MASTER_PORT_RANGE_HIGH <= MASTER_PORT_RANGE_LOW )); then
+  MASTER_PORT_RANGE_HIGH=$((MASTER_PORT_RANGE_LOW + 1))
+fi
+echo "MASTER_PORT_RANGE: [${MASTER_PORT_RANGE_LOW}, ${MASTER_PORT_RANGE_HIGH})"
+echo
+
 CMD=(
   "${PYTHON_BIN}" "${SCRIPT_DIR}/run_nemorl_osworld_online_grpo.py"
   --nemo-rl-root "${NEMORL_ROOT}"
@@ -45,6 +86,8 @@ CMD=(
   "data.validation.data_path=${VAL_DATA}"
   "checkpointing.checkpoint_dir=${CHECKPOINT_DIR}"
   "logger.log_dir=${LOG_DIR}"
+  "cluster.master_port_range_low=${MASTER_PORT_RANGE_LOW}"
+  "cluster.master_port_range_high=${MASTER_PORT_RANGE_HIGH}"
 )
 
 if [[ "$#" -gt 0 ]]; then

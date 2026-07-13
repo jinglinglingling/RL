@@ -85,7 +85,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--test-all-meta-path",
         type=Path,
-        default=project_root / "configs" / "osworld_test_all_smoke.json",
+        default=project_root / "configs" / "osworld_test_all_smoke20.json",
         help="Path to domain->example_id mapping JSON.",
     )
     parser.add_argument(
