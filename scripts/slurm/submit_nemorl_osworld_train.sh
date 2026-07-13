@@ -113,6 +113,20 @@ export NRL_MEGATRON_CHECKPOINT_DIR="${NRL_MEGATRON_CHECKPOINT_DIR:-${HF_HOME}/ne
 export TRITON_CACHE_DIR="${TRITON_CACHE_DIR:-${CACHE_ROOT}/triton}"
 export TMPDIR="${TMPDIR:-/tmp/nrl-${RUN_ID}}"
 export OSWORLD_VLM_MAX_IMAGE_SIDE="${OSWORLD_VLM_MAX_IMAGE_SIDE:-0}"
+if [[ -z "${OSWORLD_APPTAINER_BIN:-}" ]]; then
+  for _apptainer_candidate in \
+    "${USER_ROOT}/local/apptainer-test/extract/usr/bin/apptainer" \
+    "${HOME}/local/apptainer-test/extract/usr/bin/apptainer"; do
+    if [[ -x "${_apptainer_candidate}" ]]; then
+      export OSWORLD_APPTAINER_BIN="${_apptainer_candidate}"
+      break
+    fi
+  done
+  unset _apptainer_candidate
+fi
+if [[ -n "${OSWORLD_APPTAINER_BIN:-}" ]]; then
+  export APPTAINER_BIN="${APPTAINER_BIN:-${OSWORLD_APPTAINER_BIN}}"
+fi
 
 if [[ -z "${GPUS_PER_NODE}" ]]; then
   if [[ "${TRAIN_PROFILE}" == "stable-1g-3b-local" ]]; then
@@ -261,6 +275,7 @@ mkdir -p '${HF_HOME}' '${HF_MODULES_CACHE}' '${NRL_MEGATRON_CHECKPOINT_DIR}' '${
 if [[ -f '${HF_TOKEN_FILE}' ]]; then _hf_token=\"\$(tr -d '\r\n' < '${HF_TOKEN_FILE}')\"; export HF_TOKEN=\"\${_hf_token}\" HUGGING_FACE_HUB_TOKEN=\"\${_hf_token}\" HUGGINGFACE_HUB_TOKEN=\"\${_hf_token}\"; unset _hf_token; fi && \
 export HF_HUB_DISABLE_IMPLICIT_TOKEN=0 && \
 export NEMORL_ROOT='${WORKTREE}' PYTHON_BIN='${PYTHON_BIN}' \
+OSWORLD_APPTAINER_BIN='${OSWORLD_APPTAINER_BIN:-}' APPTAINER_BIN='${APPTAINER_BIN:-}' \
 NRL_WORKER_RAY_VERSION='${NRL_WORKER_RAY_VERSION}' \
 TRAIN_DATA='${TRAIN_DATA}' VAL_DATA='${VAL_DATA}' \
 CHECKPOINT_DIR='${CHECKPOINT_DIR}' LOG_DIR='${LOG_DIR}' CONFIG_PATH='${CONFIG_PATH}' && \
@@ -284,6 +299,7 @@ echo "  Results dir:  ${RESULTS_DIR}"
 echo "  Container:    ${CONTAINER}"
 echo "  Setup cmd:    ${SETUP_COMMAND}"
 echo "  Worker Ray:   ${NRL_WORKER_RAY_VERSION}"
+echo "  OSW apptainer:${OSWORLD_APPTAINER_BIN:-<auto>}"
 echo "  UV --locked:  ${NRL_UV_RUN_LOCKED}"
 echo "  Profile:      ${TRAIN_PROFILE}"
 echo "  HF token:     ${HF_TOKEN_FILE}"
