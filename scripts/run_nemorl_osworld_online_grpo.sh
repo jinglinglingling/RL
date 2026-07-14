@@ -4,26 +4,22 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-NEMORL_ROOT="${NEMORL_ROOT:-${PROJECT_ROOT}/../Nemo-RL-main-1/RL-merge-2689}"
-CONFIG_PATH="${CONFIG_PATH:-${PROJECT_ROOT}/configs/nemorl_osworld_grpo_qwen_vl.yaml}"
+NEMORL_ROOT="${NEMORL_ROOT:-${PROJECT_ROOT}/../Nemo-RL-main-1/RL}"
+CONFIG_PATH="${CONFIG_PATH:-${PROJECT_ROOT}/configs/nemorl_osworld_online_grpo_qwen_vl.yaml}"
 PYTHON_BIN="${PYTHON_BIN:-python}"
 
-TRAIN_DATA="${TRAIN_DATA:-${PROJECT_ROOT}/data/nemorl/osworld_train.jsonl}"
-VAL_DATA="${VAL_DATA:-${PROJECT_ROOT}/data/nemorl/osworld_val.jsonl}"
-CHECKPOINT_DIR="${CHECKPOINT_DIR:-${PROJECT_ROOT}/outputs/checkpoints/osworld_grpo_qwen_vl}"
-LOG_DIR="${LOG_DIR:-${PROJECT_ROOT}/outputs/logs/osworld_grpo_qwen_vl}"
+TRAIN_DATA="${TRAIN_DATA:-${PROJECT_ROOT}/data/nemogym/osworld_online_train.jsonl}"
+VAL_DATA="${VAL_DATA:-${PROJECT_ROOT}/data/nemogym/osworld_online_val.jsonl}"
+CHECKPOINT_DIR="${CHECKPOINT_DIR:-${PROJECT_ROOT}/outputs/checkpoints/osworld_online_grpo_qwen_vl}"
+LOG_DIR="${LOG_DIR:-${PROJECT_ROOT}/outputs/logs/osworld_online_grpo_qwen_vl}"
 
-if [[ ! -f "${TRAIN_DATA}" ]]; then
-  echo "[FATAL] Train dataset not found: ${TRAIN_DATA}" >&2
-  echo "Run conversion first:" >&2
-  echo "  python scripts/convert_osworld_results_to_nemorl.py ..." >&2
-  exit 1
-fi
-
-if [[ ! -f "${VAL_DATA}" ]]; then
-  echo "[FATAL] Validation dataset not found: ${VAL_DATA}" >&2
-  echo "Run conversion first:" >&2
-  echo "  python scripts/convert_osworld_results_to_nemorl.py ..." >&2
+if [[ ! -f "${TRAIN_DATA}" || ! -f "${VAL_DATA}" ]]; then
+  echo "[FATAL] Online NeMo-Gym datasets missing." >&2
+  echo "Run dataset prep first:" >&2
+  echo "  python scripts/prepare_osworld_nemogym_data.py" >&2
+  echo "Expected:" >&2
+  echo "  ${TRAIN_DATA}" >&2
+  echo "  ${VAL_DATA}" >&2
   exit 1
 fi
 
@@ -31,7 +27,7 @@ export PYTHONPATH="${PROJECT_ROOT}/src:${PYTHONPATH:-}"
 
 cd "${PROJECT_ROOT}"
 
-echo "=== NeMo-RL OSWorld GRPO ==="
+echo "=== NeMo-RL OSWorld Online GRPO (NeMo-Gym) ==="
 echo "PROJECT_ROOT: ${PROJECT_ROOT}"
 echo "NEMORL_ROOT:  ${NEMORL_ROOT}"
 echo "CONFIG_PATH:  ${CONFIG_PATH}"
@@ -83,7 +79,7 @@ echo "MASTER_PORT_RANGE: [${MASTER_PORT_RANGE_LOW}, ${MASTER_PORT_RANGE_HIGH})"
 echo
 
 CMD=(
-  "${PYTHON_BIN}" "${SCRIPT_DIR}/run_nemorl_osworld_grpo.py"
+  "${PYTHON_BIN}" "${SCRIPT_DIR}/run_nemorl_osworld_online_grpo.py"
   --nemo-rl-root "${NEMORL_ROOT}"
   --config "${CONFIG_PATH}"
   "data.train.data_path=${TRAIN_DATA}"
@@ -94,7 +90,6 @@ CMD=(
   "cluster.master_port_range_high=${MASTER_PORT_RANGE_HIGH}"
 )
 
-# Additional hydra overrides from caller.
 if [[ "$#" -gt 0 ]]; then
   CMD+=("$@")
 fi
