@@ -30,6 +30,58 @@ DEFAULT_VENV_DIR = os.path.join(git_root, "venvs")
 logger = logging.getLogger(__name__)
 
 
+def _get_target_worker_ray_version() -> str | None:
+    raw_value = os.environ.get("NRL_WORKER_RAY_VERSION", "").strip()
+    if not raw_value:
+        return None
+    return raw_value
+
+
+def _pin_worker_ray_version(venv_path: str, env: dict[str, str]) -> None:
+    target_ray_version = _get_target_worker_ray_version()
+    if not target_ray_version:
+        return
+
+    python_path = os.path.join(venv_path, "bin", "python")
+    logger.info(
+        "Pinning worker venv Ray version to %s for %s",
+        target_ray_version,
+        venv_path,
+    )
+    subprocess.run(
+        [
+            python_path,
+            "-m",
+            "pip",
+            "install",
+            "--quiet",
+            "--no-input",
+            "--no-deps",
+            "--force-reinstall",
+            f"ray=={target_ray_version}",
+        ],
+        env=env,
+        check=True,
+    )
+    ray_version = (
+        subprocess.check_output(
+            [python_path, "-c", "import ray; print(ray.__version__)"],
+            env=env,
+            text=True,
+        )
+        .strip()
+    )
+    if ray_version != target_ray_version:
+        raise RuntimeError(
+            "Failed to pin worker Ray version. "
+            f"Expected {target_ray_version}, got {ray_version} in {venv_path}."
+        )
+    print(
+        f"[venv] pinned ray=={ray_version} for {venv_path}",
+        flush=True,
+    )
+
+
 @lru_cache(maxsize=None)
 def create_local_venv(
     py_executable: str, venv_name: str, force_rebuild: bool = False
@@ -96,6 +148,7 @@ def create_local_venv(
     # Always run uv sync first to ensure the build requirements are set (for --no-build-isolation packages)
     subprocess.run(["uv", "sync", "--directory", git_root], env=env, check=True)
     subprocess.run(exec_cmd, env=env, check=True)
+    _pin_worker_ray_version(venv_path, env)
 
     # Return the path to the python executable in the virtual environment
     python_path = os.path.join(venv_path, "bin", "python")

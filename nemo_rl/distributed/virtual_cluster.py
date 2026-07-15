@@ -49,29 +49,50 @@ dir_path = os.path.dirname(os.path.abspath(__file__))
 git_root = os.path.abspath(os.path.join(dir_path, "../.."))
 
 
+def _should_use_uv_locked() -> bool:
+    """
+    Whether uv worker commands should enforce `--locked`.
+
+    Some downstream branches intentionally drift from `uv.lock` for local experiments.
+    In those cases, set `NRL_UV_RUN_LOCKED=0` to let actor env creation proceed.
+    """
+    raw_value = os.environ.get("NRL_UV_RUN_LOCKED", "1").strip().lower()
+    return raw_value not in {"0", "false", "no", "off"}
+
+
+def _uv_run_command(extra: str | None = None) -> str:
+    cmd_parts = ["uv", "run"]
+    if _should_use_uv_locked():
+        cmd_parts.append("--locked")
+    if extra:
+        cmd_parts.extend(["--extra", extra])
+    cmd_parts.extend(["--directory", git_root])
+    return " ".join(cmd_parts)
+
+
 class PY_EXECUTABLES:
     SYSTEM = sys.executable
 
     # Use NeMo-RL direct dependencies.
-    BASE = f"uv run --locked --directory {git_root}"
+    BASE = _uv_run_command()
 
     # Use NeMo-RL direct dependencies and vllm.
-    VLLM = f"uv run --locked --extra vllm --directory {git_root}"
+    VLLM = _uv_run_command("vllm")
 
     # Use NeMo-RL direct dependencies and fsdp.
-    FSDP = f"uv run --locked --extra fsdp --directory {git_root}"
+    FSDP = _uv_run_command("fsdp")
 
     # Use NeMo-RL direct dependencies and nemo-automodel.
-    AUTOMODEL = f"uv run --locked --extra automodel --directory {git_root}"
+    AUTOMODEL = _uv_run_command("automodel")
 
     # Use NeMo-RL direct dependencies and Megatron.
-    MCORE = f"uv run --locked --extra mcore --directory {git_root}"
+    MCORE = _uv_run_command("mcore")
 
     # Use NeMo-Gym dependencies
-    NEMO_GYM = f"uv run --locked --extra nemo_gym --directory {git_root}"
+    NEMO_GYM = _uv_run_command("nemo_gym")
 
     # Use NeMo-RL direct dependencies and SGLang.
-    SGLANG = f"uv run --locked --extra sglang --directory {git_root}"
+    SGLANG = _uv_run_command("sglang")
 
 
 # Default port ranges — kept below the OS ephemeral range (32768-60999 on
@@ -104,7 +125,12 @@ def _get_node_ip_and_free_port(
 ) -> tuple[str, int]:
     # Keep compatibility with older in-memory worker code that may expose
     # _get_free_port_local() without range parameters.
-    return _get_node_ip_local(), _get_free_port_local()
+    try:
+        free_port = _get_free_port_local(port_range_low, port_range_high)
+    except TypeError:
+        # Backward compatibility fallback for older helper signatures.
+        free_port = _get_free_port_local()
+    return _get_node_ip_local(), free_port
 
 
 def _get_node_ip_local() -> str:

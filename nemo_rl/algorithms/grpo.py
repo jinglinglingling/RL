@@ -1131,6 +1131,36 @@ def _should_log_nemo_gym_responses(master_config: MasterConfig) -> bool:
     return should_log_nemo_gym_responses
 
 
+def _persist_nemo_gym_full_results(
+    logger: Logger, rollout_metrics: dict[str, Any], step: int
+) -> None:
+    """Persist NeMo-Gym response tables even when a backend cannot log tables."""
+    for metric_name, metric_value in rollout_metrics.items():
+        if "full_result" not in metric_name:
+            continue
+
+        rows = getattr(metric_value, "data", None)
+        if not rows:
+            continue
+
+        serialized_rows = [
+            str(row[0])
+            for row in rows
+            if isinstance(row, (list, tuple)) and row
+        ]
+        if not serialized_rows:
+            continue
+
+        safe_metric_name = "".join(
+            char if char.isalnum() or char in {"-", "_"} else "_"
+            for char in metric_name
+        )
+        logger.log_string_list_as_jsonl(
+            serialized_rows,
+            f"{safe_metric_name}_step{step}.jsonl",
+        )
+
+
 def _create_advantage_estimator(master_config: MasterConfig):
     """Create and return an advantage estimator based on configuration.
 
@@ -1701,6 +1731,12 @@ def grpo_train(
                         rollout_metrics["mean_gen_tokens_per_sample"]
                     )
                     logger.log_metrics(rollout_metrics, total_steps + 1, prefix="train")
+                    if _should_log_nemo_gym_responses(master_config):
+                        _persist_nemo_gym_full_results(
+                            logger,
+                            rollout_metrics,
+                            total_steps + 1,
+                        )
 
                 repeated_batch = scale_rewards(
                     repeated_batch, master_config.grpo["reward_scaling"]
