@@ -4,6 +4,19 @@ This is the frozen-model evaluation path. It is intentionally separate from
 `osworld-grpo.md`: evaluation does not collect rollout logprobs and does not
 update model weights.
 
+## Get the matching RL and Gym revisions
+
+```bash
+git clone --recurse-submodules \
+  --branch osworld-grpo-3290 \
+  https://github.com/jinglinglingling/RL.git
+cd RL
+uv sync --locked
+```
+
+For an existing checkout, run `git pull`, `git submodule sync --recursive`, and
+`git submodule update --init --recursive`.
+
 ## Architecture
 
 The driver and vLLM server run on the local GPU cluster. Only sandbox lifecycle,
@@ -68,6 +81,17 @@ bash examples/nemo_gym/slurm/submit_osworld_eval_local_gpu.sh
 The wrapper defaults to account `coreai_dlalgo_nemorl`, partition `batch`,
 one exclusive node, eight GPUs, and `vllm/vllm-openai:v0.23.0`. All values can
 be overridden through environment variables.
+
+To score the held-out split created by `osworld-grpo.md`, use its absolute path
+and enable output resume for interruption-safe evaluation:
+
+```bash
+export OSWORLD_EVAL_INPUT="$PWD/results/osworld-data/split-20260727/heldout.jsonl"
+export OSWORLD_EVAL_OUTPUT="$PWD/results/osworld-eval/heldout.jsonl"
+export OSWORLD_EVAL_RESUME=1
+export OSWORLD_DEBUG_TRAJ_DIR="$PWD/results/osworld-eval/heldout-trajectories"
+bash examples/nemo_gym/slurm/submit_osworld_eval_local_gpu.sh
+```
 
 ## Run the evaluation driver
 
