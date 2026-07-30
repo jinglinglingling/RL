@@ -487,6 +487,31 @@ def test_get_resume_paths_embedded_megatron_optimizer(checkpoint_dir, model_comp
     assert optimizer_path == expected_optimizer_path
 
 
+@pytest.mark.parametrize("model_component", ["policy", "value"])
+def test_get_resume_paths_embedded_megatron_torch_dist_optimizer(
+    checkpoint_dir, model_component
+):
+    """Newer MBridge torch_dist checkpoints describe embedded optimizer shards in YAML."""
+    checkpoint_path = checkpoint_dir / "step_1"
+    expected_weights_path = checkpoint_path / model_component / "weights"
+    iteration_path = expected_weights_path / "iter_0000000"
+    iteration_path.mkdir(parents=True)
+    (iteration_path / "run_config.yaml").write_text(
+        "checkpoint:\n  ckpt_format: torch_dist\n  save_optim: true\n",
+        encoding="utf-8",
+    )
+    expected_optimizer_path = checkpoint_path / model_component / "optimizer"
+    assert not expected_optimizer_path.exists()
+
+    weights_path, optimizer_path = CheckpointManager.get_resume_paths(
+        checkpoint_path,
+        model_component=model_component,
+    )
+
+    assert weights_path == expected_weights_path
+    assert optimizer_path == expected_optimizer_path
+
+
 def test_get_best_checkpoint_path_no_checkpoints(checkpoint_manager, checkpoint_dir):
     """Test that get_best_checkpoint_path returns None when no checkpoints exist."""
     result = checkpoint_manager.get_best_checkpoint_path()

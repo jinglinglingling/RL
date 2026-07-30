@@ -498,7 +498,8 @@ class BaseVllmGenerationWorker:
         # while stock vLLM still allocates ls1/ls2 parameters. Initialize those
         # parameters before colocated level-1 sleep releases their CUDA storage;
         # mutating them later from prepare_refit_info corrupts sleep/wake state.
-        self.llm.collective_rpc("_initialize_nemotron_omni_radio_layerscale")
+        if not getattr(self, "_defer_radio_layerscale_init", False):
+            self._initialize_nemotron_omni_radio_layerscale()
         log_gpu_memory_diagnostics(
             label="after_engine_create", worker_type="VllmGenerationWorker", device_id=0
         )
@@ -509,6 +510,10 @@ class BaseVllmGenerationWorker:
         log_gpu_memory_diagnostics(
             label="load_model_complete", worker_type="VllmGenerationWorker", device_id=0
         )
+
+    def _initialize_nemotron_omni_radio_layerscale(self) -> None:
+        """Initialize folded RADIO LayerScale through a synchronous engine."""
+        self.llm.collective_rpc("_initialize_nemotron_omni_radio_layerscale")
 
     def llm(self):
         return self.llm

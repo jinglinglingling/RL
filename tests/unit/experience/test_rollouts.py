@@ -930,6 +930,8 @@ def test_run_async_nemo_gym_rollout(
     # Row 0: per-agent override looser than the configured cap — min() should clamp down to max_new_tokens.
     # Row 1: no per-agent override — should fall back to max_new_tokens.
     rows[0]["responses_create_params"]["max_output_tokens"] = max_new_tokens + 1
+    rows[0]["verifier_metadata"] = {"id": "task-0", "snapshot": "app-0"}
+    rows[1]["verifier_metadata"] = {"id": "task-1", "snapshot": "app-1"}
     assert "max_output_tokens" not in rows[1]["responses_create_params"]
 
     actual_result = run_async_nemo_gym_rollout(
@@ -958,6 +960,8 @@ def test_run_async_nemo_gym_rollout(
                     "type": "responses_api_agents",
                 },
             ],
+            "osworld_task_id": ["task-0", "task-1"],
+            "osworld_snapshot": ["app-0", "app-1"],
             "length": torch.tensor([3080, 3048]),
             "loss_multiplier": torch.tensor([1.0, 1.0]),
             "mask_sample": torch.tensor([False, False]),

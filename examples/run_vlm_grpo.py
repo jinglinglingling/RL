@@ -19,10 +19,16 @@ import time
 
 from omegaconf import OmegaConf
 
-from nemo_rl.algorithms.grpo import MasterConfig, grpo_train, setup
+from nemo_rl.algorithms.grpo import (
+    MasterConfig,
+    _should_use_nemo_gym,
+    grpo_train,
+    setup,
+)
 from nemo_rl.algorithms.utils import get_tokenizer
 from nemo_rl.data.utils import setup_response_data
 from nemo_rl.distributed.virtual_cluster import init_ray
+from nemo_rl.environments.nemo_gym import setup_nemo_gym_config
 from nemo_rl.models.generation import configure_generation_config
 from nemo_rl.utils.config import (
     load_config,
@@ -95,6 +101,9 @@ def main() -> None:
     config.policy["generation"] = configure_generation_config(
         config.policy["generation"], processor.tokenizer
     )
+    use_nemo_gym = _should_use_nemo_gym(config)
+    if use_nemo_gym:
+        setup_nemo_gym_config(config, processor.tokenizer)
     if "vllm_cfg" in config.policy["generation"]:
         assert (
             config.policy["generation"]["vllm_cfg"]["skip_tokenizer_init"] == False
@@ -103,15 +112,24 @@ def main() -> None:
         )
 
     with rl_init_timer.time("data"):
-        dataset, val_dataset, task_to_env, val_task_to_env = setup_response_data(
-            processor, config.data, config.env, is_vlm=True
-        )
+        if use_nemo_gym:
+            # NeMo-Gym owns environment creation and verification. Passing the
+            # master env config here would incorrectly instantiate the native
+            # VLMEnvironment and require reward_functions for "nemo_gym".
+            dataset, val_dataset = setup_response_data(
+                processor, config.data, env_configs=None, is_vlm=True
+            )
+            task_to_env, val_task_to_env = {}, {}
+        else:
+            dataset, val_dataset, task_to_env, val_task_to_env = setup_response_data(
+                processor, config.data, config.env, is_vlm=True
+            )
 
     with rl_init_timer.time("setup"):
         (
             policy,
             policy_generation,
-            _nemo_gym,
+            nemo_gym,
             cluster,
             dataloader,
             val_dataloader,
@@ -123,6 +141,12 @@ def main() -> None:
             _teacher_worker_groups,
             _alias_to_group_alias,
         ) = setup(config, tokenizer, dataset, val_dataset, processor=processor)
+
+    if use_nemo_gym:
+        # setup() creates the Gym actor after the generation server URLs are
+        # reserved. Bind that actor exactly as run_grpo_nemo_gym.py does.
+        task_to_env = {"nemo_gym": nemo_gym}
+        val_task_to_env = task_to_env
 
     rl_init_timer.record("total", time.perf_counter() - main_start)
     rl_init_metrics = rl_init_timer.get_timing_metrics(reduction_op="sum")

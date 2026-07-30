@@ -208,6 +208,15 @@ class CheckpointManager:
                     # state from the weights_path.
                     return weights_path, optimizer_path
 
+            # Newer Megatron Bridge torch_dist checkpoints do not write common.pt.
+            # Their resolved run config records whether optimizer shards were included.
+            run_config_path = weights_path / "iter_0000000" / "run_config.yaml"
+            if run_config_path.exists():
+                with run_config_path.open(encoding="utf-8") as stream:
+                    run_config = yaml.safe_load(stream) or {}
+                if run_config.get("checkpoint", {}).get("save_optim") is True:
+                    return weights_path, optimizer_path
+
             warnings.warn(
                 f"Optimizer state not found at {optimizer_path} (DTensor path), and no embedded "
                 f"optimizer state detected under {weights_path} (Megatron path). "

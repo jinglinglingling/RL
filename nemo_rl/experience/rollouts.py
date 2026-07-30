@@ -93,6 +93,9 @@ def _extract_mask_sample_flags(results: list[dict[str, Any]]) -> torch.Tensor:
                 (result["full_result"].get("instance_config") or {}).get(
                     "mask_sample", False
                 )
+                or str(result["full_result"].get("verify_error", "")).startswith(
+                    "rollout_infra_failure"
+                )
             )
             for result in results
         ],
@@ -1873,7 +1876,10 @@ def run_async_nemo_gym_rollout(
                     if m["role"] == "assistant"
                 ),
                 "total_tokens": sum(len(m["token_ids"]) for m in r["message_log"]),
-                "turn_count": sum(1 for m in r["message_log"] if m["role"] == "user"),
+                "turn_count": r.get(
+                    "trajectory_turn_count",
+                    sum(1 for m in r["message_log"] if m["role"] == "user"),
+                ),
                 "hit_max_tokens": sum(len(m["token_ids"]) for m in r["message_log"])
                 == max_total_tokens_per_sample,
                 # max_gen_tokens_per_turn: Diagnostic for long single generations
@@ -1995,10 +2001,25 @@ def run_async_nemo_gym_rollout(
     final_batch = BatchedDataDict[DatumSpec](
         {
             "agent_ref": [r["agent_ref"] for r in results],
+            # Keep stable task metadata through filtering so OSWorld reward
+            # groups can be audited and reused for task curation.
+            "osworld_task_id": [
+                (row.get("verifier_metadata") or {}).get("id")
+                for row in nemo_gym_rows
+            ],
+            "osworld_snapshot": [
+                (row.get("verifier_metadata") or {}).get("snapshot")
+                for row in nemo_gym_rows
+            ],
             "message_log": [r["message_log"] for r in results],
             # length is used downstream for mean_prompt_length
             "length": torch.tensor(
-                [len(r["input_message_log"][0]["token_ids"]) for r in results]
+                [
+                    len(r["message_log"][0]["token_ids"])
+                    if r.get("independent_turn_sampled", False)
+                    else len(r["input_message_log"][0]["token_ids"])
+                    for r in results
+                ]
             ),
             "loss_multiplier": input_batch["loss_multiplier"],
             # Unnecessary parts of the DatumSpec unused by the GRPO algorithm
@@ -2015,6 +2036,12 @@ def run_async_nemo_gym_rollout(
             # Agent/env-driven mask flag — True means this sample should be masked
             # from the GRPO gradient (kept for advantage computation).
             "mask_sample": _extract_mask_sample_flags(results),
+            # Compacted multimodal trajectories train one exact independent
+            # prompt-generation pair while input_ids above retain the first-turn
+            # prompt for GRPO grouping across rollouts.
+            "independent_turn_sampled": [
+                bool(r.get("independent_turn_sampled", False)) for r in results
+            ],
         }
     )
 

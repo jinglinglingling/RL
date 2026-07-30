@@ -250,14 +250,19 @@ class VllmAsyncGenerationWorkerImpl(BaseVllmGenerationWorker):
             f"for vLLM HTTP server"
         )
 
-    def load_model(self) -> None:
+    async def load_model(self) -> None:
         """Load the vLLM model and create the engine.
 
         Called after a deferred init to perform the heavy model loading.
         """
         if not self.is_model_owner:
             return
-        self._load_model(self._deferred_bundle_indices, self._deferred_seed)
+        self._defer_radio_layerscale_init = True
+        try:
+            self._load_model(self._deferred_bundle_indices, self._deferred_seed)
+        finally:
+            self._defer_radio_layerscale_init = False
+        await self.llm.collective_rpc("_initialize_nemotron_omni_radio_layerscale")
 
     def _create_engine(self, llm_kwargs: dict[str, Any]) -> None:
         from vllm.config import CompilationConfig

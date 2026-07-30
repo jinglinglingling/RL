@@ -103,6 +103,27 @@ class TestExtractMaskSampleFlags:
             mask_sample, torch.tensor([True, False, False, False, False])
         )
 
+    def test_masks_rollout_infrastructure_failures(self):
+        results = [
+            {
+                "full_result": {
+                    "reward": 0.0,
+                    "verify_error": "rollout_infra_failure: TimeoutError()",
+                }
+            },
+            {
+                "full_result": {
+                    "reward": 0.0,
+                    "verify_error": "task_evaluator_returned_zero",
+                }
+            },
+        ]
+
+        assert torch.equal(
+            _extract_mask_sample_flags(results),
+            torch.tensor([True, False]),
+        )
+
 
 # =====================================================================
 # Penalty 1: penalize_duplicated_reasoning

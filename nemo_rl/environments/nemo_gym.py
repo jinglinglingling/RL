@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import os
+import random
 import subprocess
 from pathlib import Path
 from typing import Any, Dict, List, NotRequired, TypedDict
@@ -20,6 +21,12 @@ import ray
 import torch
 from transformers import PreTrainedTokenizerBase
 
+from nemo_rl.data.multimodal_utils import (
+    PackedTensor,
+    get_dim_to_pack_along,
+    get_multimodal_keys_from_processor,
+    resolve_to_image,
+)
 from nemo_rl.distributed.virtual_cluster import (
     DEFAULT_GYM_PORT_RANGE_HIGH,
     DEFAULT_GYM_PORT_RANGE_LOW,
@@ -66,6 +73,8 @@ class NemoGymConfig(TypedDict):
     model_name: str
     base_urls: List[str]
     initial_global_config_dict: Dict[str, Any]
+    processor: NotRequired[Any]
+    independent_turn_sampling: NotRequired[str]
     # Port range for Gym HTTP servers (head server + subprocess servers).
     # Defaults to DEFAULT_GYM_PORT_RANGE_LOW/HIGH (5000-5999) from
     # nemo_rl.distributed.virtual_cluster.  See the port layout there.
@@ -270,17 +279,38 @@ Depending on your data shape, you may want to change these values."""
 
             nemo_rl_rowidxs = []
             nemo_rl_results = []
+            retryable_empty_generation_errors = []
             for task in nemo_gym_result_iterator:
                 with timer.time(label=f"{timer_prefix}/await_results"):
                     nemo_gym_row, nemo_gym_result = await task
 
                 with timer.time(label=f"{timer_prefix}/postprocess_results"):
-                    nemo_rl_result = self._postprocess_nemo_gym_to_nemo_rl_result(
-                        nemo_gym_result, tokenizer
-                    )
+                    try:
+                        nemo_rl_result = self._postprocess_nemo_gym_to_nemo_rl_result(
+                            nemo_gym_result,
+                            tokenizer,
+                            processor=self.cfg.get("processor"),
+                        )
+                    except ValueError as error:
+                        if (
+                            "NeMo Gym returned a result with no generation data"
+                            in str(error)
+                            and trial + 1 < max_attempts
+                        ):
+                            retryable_empty_generation_errors.append(error)
+                            continue
+                        raise
 
                 nemo_rl_rowidxs.append(nemo_gym_row["_rowidx"])
                 nemo_rl_results.append(nemo_rl_result)
+
+            if retryable_empty_generation_errors:
+                trial += 1
+                print(
+                    "NeMo Gym returned rollout results with no generation data; "
+                    f"retrying the batch... (trial {trial}/{max_attempts})"
+                )
+                continue
 
             # determine if generation_logprobs contain NaN; if not, break;
             logprob_contains_nan = False
@@ -317,11 +347,27 @@ Depending on your data shape, you may want to change these values."""
         return nemo_rl_results, timing_metrics
 
     def _postprocess_nemo_gym_to_nemo_rl_result(
-        self, nemo_gym_result: dict, tokenizer: PreTrainedTokenizerBase
+        self,
+        nemo_gym_result: dict,
+        tokenizer: PreTrainedTokenizerBase,
+        processor: Any | None = None,
     ) -> dict:
         assert isinstance(nemo_gym_result, dict), (
             f"Hit a non-successful response when querying NeMo Gym for rollouts: {nemo_gym_result}"
         )
+
+        trainable_output_items = [
+            item
+            for item in nemo_gym_result["response"]["output"]
+            if "generation_token_ids" in item
+        ]
+        if any(item.get("multimodal_inputs") is not None for item in trainable_output_items):
+            return self._postprocess_independent_multimodal_turns(
+                nemo_gym_result,
+                tokenizer,
+                processor,
+                trainable_output_items,
+            )
 
         nemo_rl_message_log = []
         seen_token_ids: List[int] = []
@@ -455,6 +501,200 @@ Output prompt token IDs: {output_item_dict["prompt_token_ids"]}
             "message_log": nemo_rl_message_log,
             "input_message_log": nemo_rl_message_log[:1],
             "full_result": nemo_gym_result,
+        }
+
+    def _postprocess_independent_multimodal_turns(
+        self,
+        nemo_gym_result: dict,
+        tokenizer: PreTrainedTokenizerBase,
+        processor: Any | None,
+        trainable_output_items: list[dict[str, Any]],
+    ) -> dict:
+        """Select one exact prompt-generation pair from a compacted VLM trajectory.
+
+        OSWorld's three-image sliding window makes consecutive prompts
+        non-contiguous. Concatenating those turns would train later actions
+        under a different context than the rollout policy used. Until variable
+        numbers of independent sequences per trajectory are supported, sample
+        one complete turn and apply the trajectory-level GRPO reward to it.
+        """
+        if processor is None:
+            raise ValueError(
+                "NeMo Gym returned multimodal training inputs, but no processor "
+                "was provided to the NemoGym actor."
+            )
+        if not trainable_output_items:
+            raise ValueError("NeMo Gym returned no trainable multimodal turns.")
+
+        turns: list[
+            tuple[
+                list[dict[str, Any]],
+                list[int],
+                list[int],
+                dict[str, Any],
+            ]
+        ] = []
+        for output_item_dict in trainable_output_items:
+            prompt_token_ids = output_item_dict.pop("prompt_token_ids")
+            generation_token_ids = output_item_dict.pop("generation_token_ids")
+            generation_log_probs = output_item_dict.pop("generation_log_probs")
+            routed_experts_raw = output_item_dict.pop("routed_experts", None)
+            multimodal_inputs = output_item_dict.pop("multimodal_inputs")
+
+            if len(generation_token_ids) != len(generation_log_probs):
+                raise ValueError(
+                    "NeMo Gym returned mismatched generation token/logprob lengths: "
+                    f"{len(generation_token_ids)} vs {len(generation_log_probs)}."
+                )
+
+            user_message: dict[str, Any] = {
+                "role": "user",
+                "content": "",
+                "token_ids": torch.tensor(prompt_token_ids),
+            }
+
+            is_invalid_tool_call, has_malformed_thinking = (
+                _detect_invalid_tool_call_and_malformed_thinking(
+                    output_item_dict,
+                    invalid_tool_call_patterns=self.cfg.get(
+                        "invalid_tool_call_patterns"
+                    ),
+                    thinking_tags=self.cfg.get("thinking_tags"),
+                )
+            )
+            assistant_message: dict[str, Any] = {
+                "role": "assistant",
+                "content": "",
+                "token_ids": torch.tensor(generation_token_ids),
+                "generation_logprobs": torch.tensor(generation_log_probs),
+                "is_invalid_tool_call": is_invalid_tool_call,
+                "has_malformed_thinking": has_malformed_thinking,
+            }
+
+            if routed_experts_raw is not None:
+                routed_experts = torch.as_tensor(
+                    routed_experts_raw, dtype=torch.int32
+                )
+                expected_tokens = len(prompt_token_ids) + len(generation_token_ids)
+                if routed_experts.dim() != 3 or routed_experts.shape[0] < expected_tokens:
+                    raise ValueError(
+                        "NeMo Gym returned routed_experts with an invalid shape for "
+                        f"an independent turn: {tuple(routed_experts.shape)}, "
+                        f"expected at least {expected_tokens} token rows."
+                    )
+                user_message["routed_experts"] = routed_experts[
+                    : len(prompt_token_ids)
+                ]
+                assistant_message["routed_experts"] = routed_experts[
+                    len(prompt_token_ids) : expected_tokens
+                ]
+            elif self.cfg.get("require_routed_experts", False):
+                raise ValueError(
+                    "policy.router_replay.enabled=true requires routed_experts "
+                    "for every OSWorld turn."
+                )
+
+            turns.append(
+                (
+                    [user_message, assistant_message],
+                    prompt_token_ids,
+                    generation_token_ids,
+                    multimodal_inputs,
+                )
+            )
+
+        sampling = self.cfg.get("independent_turn_sampling", "random")
+        if sampling == "first":
+            selected_idx = 0
+        elif sampling == "last":
+            selected_idx = len(turns) - 1
+        elif sampling == "random":
+            selected_idx = random.randrange(len(turns))
+        else:
+            raise ValueError(
+                "independent_turn_sampling must be one of first, last, random; "
+                f"got {sampling!r}."
+            )
+
+        prompt_strs = tokenizer.batch_decode([turn[1] for turn in turns])
+        generation_strs = tokenizer.batch_decode([turn[2] for turn in turns])
+        for output_item_dict, prompt_str, generation_str in zip(
+            trainable_output_items,
+            prompt_strs,
+            generation_strs,
+        ):
+            output_item_dict["prompt_str"] = prompt_str
+            output_item_dict["generation_str"] = generation_str
+
+        selected_message_log = turns[selected_idx][0]
+        selected_message_log[0].update(
+            self._process_dynamic_multimodal_inputs(
+                processor,
+                turns[selected_idx][3],
+            )
+        )
+        grouping_user_message = {
+            "role": "user",
+            "content": "",
+            "token_ids": torch.tensor(turns[0][1]),
+        }
+        return {
+            "message_log": selected_message_log,
+            "input_message_log": [grouping_user_message],
+            "full_result": nemo_gym_result,
+            "independent_turn_sampled": True,
+            "selected_turn_index": selected_idx,
+            "trajectory_turn_count": len(turns),
+        }
+
+    @staticmethod
+    def _process_dynamic_multimodal_inputs(
+        processor: Any,
+        multimodal_inputs: dict[str, Any],
+    ) -> dict[str, PackedTensor]:
+        images_base64 = multimodal_inputs.get("images_base64") or []
+        if not images_base64:
+            return {}
+
+        images = [
+            resolve_to_image(f"data:image/png;base64,{image_base64}")
+            for image_base64 in images_base64
+        ]
+        image_token = getattr(processor, "image_token", "<image>")
+        processed = processor(
+            text="\n".join([image_token] * len(images)),
+            images=images,
+            return_tensors="pt",
+        )
+        multimodal_keys = list(get_multimodal_keys_from_processor(processor))
+
+        if (
+            "pixel_values" in processed
+            and "imgs_sizes" not in processed
+            and processed["pixel_values"].ndim == 4
+        ):
+            pixel_values = processed["pixel_values"]
+            num_tiles, _, height, width = pixel_values.shape
+            processed["imgs_sizes"] = torch.tensor(
+                [[height, width]] * num_tiles, dtype=torch.long
+            )
+        if "imgs_sizes" in processed and "imgs_sizes" not in multimodal_keys:
+            multimodal_keys.append("imgs_sizes")
+        if "imgs_sizes" in processed and "num_frames" not in processed:
+            processed["num_frames"] = torch.ones(
+                len(processed["imgs_sizes"]), dtype=torch.long
+            )
+        if "num_frames" in processed and "num_frames" not in multimodal_keys:
+            multimodal_keys.append("num_frames")
+
+        return {
+            key: PackedTensor(
+                processed[key],
+                dim_to_pack=get_dim_to_pack_along(processor, key),
+                pad_to_max_shape=key == "pixel_values",
+            )
+            for key in multimodal_keys
+            if key in processed
         }
 
     def shutdown(self) -> None:

@@ -574,6 +574,9 @@ def setup(
             "invalid_tool_call_patterns", None
         )
         thinking_tags = nemo_gym_dict.pop("thinking_tags", None)
+        independent_turn_sampling = nemo_gym_dict.pop(
+            "independent_turn_sampling", "random"
+        )
         # Pass prebuilt cache + venv dirs through the global config so the gym reuses
         # image-baked venvs instead of rebuilding them.
         uv_cache_dir = get_nemo_gym_uv_cache_dir()
@@ -588,6 +591,8 @@ def setup(
             invalid_tool_call_patterns=invalid_tool_call_patterns,
             thinking_tags=thinking_tags,
             require_routed_experts=router_replay_enabled(policy_config),
+            processor=processor,
+            independent_turn_sampling=independent_turn_sampling,
             initial_global_config_dict=nemo_gym_dict,
         )
         nemo_gym_opts = {}
@@ -2610,6 +2615,13 @@ def grpo_train(
                         and "unshaped_total_reward" in repeated_batch
                         else None
                     )
+                    # Infrastructure failures stay in the fixed-size batch but
+                    # must not alter the baseline/std of valid OSWorld rollouts.
+                    advantage_valid_mask = (
+                        (~repeated_batch["mask_sample"]).to(rewards.dtype)
+                        if "mask_sample" in repeated_batch
+                        else torch.ones_like(rewards)
+                    )
                     if master_config.grpo.get("calculate_advantages_on_gpu"):
                         print("Computing advantages on GPU!")
                         # Just fix the device id for now
@@ -2617,7 +2629,7 @@ def grpo_train(
                         baseline, std = calculate_baseline_and_std_per_prompt(
                             input_ids.cuda(device_id),
                             rewards.cuda(device_id),
-                            torch.ones_like(rewards).cuda(device_id),
+                            advantage_valid_mask.cuda(device_id),
                             leave_one_out_baseline=master_config.grpo[
                                 "use_leave_one_out_baseline"
                             ],
@@ -2633,7 +2645,7 @@ def grpo_train(
                         baseline, std = calculate_baseline_and_std_per_prompt(
                             input_ids,
                             rewards,
-                            torch.ones_like(rewards),
+                            advantage_valid_mask,
                             leave_one_out_baseline=master_config.grpo[
                                 "use_leave_one_out_baseline"
                             ],
@@ -2676,19 +2688,33 @@ def grpo_train(
                     # Save baseline for logging (before deletion)
                     baseline_for_log = baseline.clone()
 
-                    # Extract original prompt messages using the length field
-                    # This correctly handles multi-turn prompts that contain assistant messages
-                    initial_prompt_message_logs = extract_initial_prompt_messages(
-                        repeated_batch["message_log"],
-                        repeated_batch["length"],
+                    independent_turn_sampled = repeated_batch.get(
+                        "independent_turn_sampled", []
                     )
-                    prompt_batched_flat, _ = batched_message_log_to_flat_message(
-                        initial_prompt_message_logs,
-                        pad_value_dict={"token_ids": tokenizer.pad_token_id},
-                    )
-                    prompt_ids_for_adv = prompt_batched_flat["token_ids"]
-                    del initial_prompt_message_logs
-                    del prompt_batched_flat
+                    if independent_turn_sampled and any(independent_turn_sampled):
+                        assert all(independent_turn_sampled), (
+                            "A GRPO batch cannot mix compacted independent-turn "
+                            "samples with contiguous trajectories."
+                        )
+                        # The selected OSWorld turn has a different compacted
+                        # prompt in each rollout. Group on the first-turn prompt
+                        # captured by run_async_nemo_gym_rollout instead, whose
+                        # token IDs are stable across generations of one task.
+                        prompt_ids_for_adv = input_ids
+                    else:
+                        # Extract original prompt messages using the length field
+                        # This correctly handles multi-turn prompts that contain assistant messages
+                        initial_prompt_message_logs = extract_initial_prompt_messages(
+                            repeated_batch["message_log"],
+                            repeated_batch["length"],
+                        )
+                        prompt_batched_flat, _ = batched_message_log_to_flat_message(
+                            initial_prompt_message_logs,
+                            pad_value_dict={"token_ids": tokenizer.pad_token_id},
+                        )
+                        prompt_ids_for_adv = prompt_batched_flat["token_ids"]
+                        del initial_prompt_message_logs
+                        del prompt_batched_flat
                     del input_ids
                     del baseline
                     del std
@@ -3172,6 +3198,12 @@ def grpo_train(
                 log_data = {}
                 if "agent_ref" in repeated_batch:
                     log_data["agent_ref"] = repeated_batch["agent_ref"]
+                if "osworld_task_id" in repeated_batch:
+                    log_data["osworld_task_id"] = repeated_batch["osworld_task_id"]
+                if "osworld_snapshot" in repeated_batch:
+                    log_data["osworld_snapshot"] = repeated_batch[
+                        "osworld_snapshot"
+                    ]
                 log_data["content"] = flat_messages["content"]
                 log_data["rewards"] = rewards.tolist()
                 if master_config.grpo["use_dynamic_sampling"]:

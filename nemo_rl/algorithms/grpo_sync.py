@@ -1180,6 +1180,12 @@ def grpo_train_sync(
                 log_data: dict = {}
                 if "agent_ref" in repeated_batch:
                     log_data["agent_ref"] = repeated_batch["agent_ref"]
+                if "osworld_task_id" in repeated_batch:
+                    log_data["osworld_task_id"] = repeated_batch["osworld_task_id"]
+                if "osworld_snapshot" in repeated_batch:
+                    log_data["osworld_snapshot"] = repeated_batch[
+                        "osworld_snapshot"
+                    ]
                 if master_config.grpo["use_dynamic_sampling"]:
                     # Legacy semantics: ``rewards`` is unfiltered total_reward,
                     # ``filtered_rewards`` is the kept slice that's trained on.

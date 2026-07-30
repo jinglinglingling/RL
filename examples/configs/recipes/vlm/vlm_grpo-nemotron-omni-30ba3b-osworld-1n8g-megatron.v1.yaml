@@ -1,0 +1,130 @@
+defaults: vlm_grpo-nemotron-omni-30ba3b-clevr-1n8g-megatron-tp8ep8.v1.yaml
+
+grpo:
+  # cell-2 currently exposes four concurrent osworld-kvm sandboxes.
+  num_prompts_per_step: 1
+  # Keep the rollout-group size explicit per experiment so rollout-4 and
+  # rollout-8 runs never accidentally share training semantics.
+  num_generations_per_prompt: ${oc.env:OSWORLD_NUM_GENERATIONS,8}
+  max_rollout_turns: 1  # The NeMo-Gym agent owns the complete desktop loop.
+  val_period: 0
+  val_at_start: false
+  val_at_end: false
+  # Keep only task groups containing both successful and failed trajectories.
+  # This is the framework's on-policy DAPO-style equivalent of task curation
+  # and avoids unsafe replay of trajectories sampled by stale policies.
+  use_dynamic_sampling: true
+  dynamic_sampling_max_gen_batches: 16
+  batch_multiplier: 1
+  async_grpo:
+    enabled: false
+
+policy:
+  train_global_batch_size: ${oc.env:OSWORLD_TRAIN_GLOBAL_BATCH_SIZE,8}
+  train_micro_batch_size: 1
+  logprob_batch_size: 1
+  # Keep the validated PR #3290 context limit for the first E2E training
+  # smoke. The processor-expanded media sequence and response are capped
+  # together by cap_max_tokens_to_context in the inherited recipe.
+  max_total_sequence_length: 8192
+  megatron_cfg:
+    env_vars:
+      # The colocated policy reaches the allocator limit while Adam states are
+      # initialized on 80 GB GPUs. Expandable segments reduce fragmentation.
+      PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+    optimizer:
+      # Keep the full model update while moving Adam state and optimizer
+      # compute off GPU; NeMo-RL requires a full fraction for this backend.
+      optimizer_cpu_offload: true
+      optimizer_offload_fraction: 1.0
+    scheduler:
+      # Smoke checkpoints were created with a shorter max_num_steps. Restore
+      # scheduler progress, but extend its horizon to this run's step count.
+      override_opt_param_scheduler: true
+  generation:
+    # These must exactly match the NeMo-Gym agent request. The async vLLM
+    # training endpoint rejects mismatches because they make rollouts off-policy.
+    # Match ARPO/DART's exploration setting during OSWorld training.
+    temperature: 1.0
+    top_p: 0.95
+    max_new_tokens: 4096
+    stop_token_ids: null
+    stop_strings: null
+    vllm_cfg:
+      max_model_len: 8192
+      # NeMo-Gym requires the OpenAI-compatible asynchronous generation worker.
+      # The OSWorld integration adds the awaited Omni RADIO initialization path.
+      async_engine: true
+      expose_http_server: true
+      reasoning_parser_plugin: nemo_rl/models/generation/vllm/reasoning_parsers/nano_v3_reasoning_parser.py
+      http_server_serving_chat_kwargs:
+        reasoning_parser: nano_v3
+        chat_template_content_format: string
+    vllm_kwargs:
+      limit_mm_per_prompt:
+        image: 3
+      mamba_ssm_cache_dtype: float32
+
+data:
+  train:
+    dataset_name: NemoGymDataset
+    data_path: ${oc.env:OSWORLD_GRPO_TRAIN_DATA}
+  validation: null
+  default:
+    dataset_name: NemoGymDataset
+    env_name: nemo_gym
+    prompt_file: null
+    system_prompt_file: null
+    processor: nemo_gym_data_processor
+
+env:
+  should_use_nemo_gym: true
+  should_log_nemo_gym_responses: false
+  nemo_gym:
+    num_workers: 4
+    # A sandbox allocation or guest-side task download can transiently fail
+    # before the model emits any tokens. Retry the rollout batch rather than
+    # aborting the entire training run with a misleading context-length error.
+    rollout_max_attempts_to_avoid_lp_nan: 3
+    port_range_low: 5000
+    port_range_high: 5999
+    skip_venv_if_present: true
+    # OSWorld compacts image history, so train one exact turn per trajectory.
+    # Random selection covers early and late actions without concatenating
+    # non-contiguous prompts under the wrong conditioning context.
+    independent_turn_sampling: random
+    config_paths:
+    - responses_api_models/vllm_model/configs/vllm_model_for_training.yaml
+    - responses_api_agents/nemotron_osworld/configs/nemotron_osworld.yaml
+    - resources_servers/osworld/configs/osworld.yaml
+    - resources_servers/osworld/configs/opensandbox_osworld.yaml
+    policy_model:
+      responses_api_models:
+        vllm_model:
+          # The reference Nemotron agent reads this field to build text history.
+          preserve_reasoning_content: true
+    nemotron_osworld:
+      responses_api_agents:
+        nemotron_osworld:
+          max_steps: ${oc.env:OSWORLD_MAX_STEPS,100}
+          # Must exactly match policy.generation.temperature; the training
+          # endpoint rejects off-policy request parameters.
+          temperature: 1.0
+          # Temporary pre-compaction baseline: even two expanded screenshots
+          # can exceed 8K on long text histories. Keep only the current screen
+          # until token-aware multimodal context compaction is available.
+          max_image_history_length: 1
+
+logger:
+  log_dir: logs/osworld-grpo
+  wandb:
+    project: osworld-grpo
+    name: nemotron-omni-osworld
+
+checkpointing:
+  checkpoint_dir: results/osworld-grpo-nemotron-omni
+  keep_top_k: 1
+
+cluster:
+  num_nodes: 1
+  gpus_per_node: 8
