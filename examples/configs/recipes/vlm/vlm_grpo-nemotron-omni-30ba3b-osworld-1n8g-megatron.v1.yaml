@@ -1,8 +1,11 @@
 defaults: vlm_grpo-nemotron-omni-30ba3b-clevr-1n8g-megatron-tp8ep8.v1.yaml
 
 grpo:
-  # cell-2 currently exposes four concurrent osworld-kvm sandboxes.
-  num_prompts_per_step: 1
+  # Batch independent task groups while preserving within-prompt GRPO groups.
+  num_prompts_per_step: ${oc.decode:${oc.env:OSWORLD_NUM_PROMPTS_PER_STEP,1}}
+  # Keep evaluation coverage independent from the inherited 256-sample cap.
+  val_batch_size: ${oc.decode:${oc.env:OSWORLD_VAL_BATCH_SIZE,4}}
+  max_val_samples: ${oc.decode:${oc.env:OSWORLD_MAX_VAL_SAMPLES,20}}
   # Keep the rollout-group size explicit per experiment so rollout-4 and
   # rollout-8 runs never accidentally share training semantics.
   num_generations_per_prompt: ${oc.env:OSWORLD_NUM_GENERATIONS,8}
@@ -13,20 +16,22 @@ grpo:
   # Keep only task groups containing both successful and failed trajectories.
   # This is the framework's on-policy DAPO-style equivalent of task curation
   # and avoids unsafe replay of trajectories sampled by stale policies.
-  use_dynamic_sampling: true
-  dynamic_sampling_max_gen_batches: 16
+  use_dynamic_sampling: ${oc.env:OSWORLD_USE_DYNAMIC_SAMPLING,true}
+  dynamic_sampling_max_gen_batches: ${oc.env:OSWORLD_DYNAMIC_SAMPLING_MAX_GEN_BATCHES,16}
   batch_multiplier: 1
   async_grpo:
     enabled: false
 
 policy:
-  train_global_batch_size: ${oc.env:OSWORLD_TRAIN_GLOBAL_BATCH_SIZE,8}
+  # Size this as prompts * trajectories/prompt * max OSWorld turns. All-turn
+  # expansion pads shorter batches so every trajectory contributes one update.
+  train_global_batch_size: ${oc.env:OSWORLD_TRAIN_GLOBAL_BATCH_SIZE,128}
   train_micro_batch_size: 1
   logprob_batch_size: 1
-  # Keep the validated PR #3290 context limit for the first E2E training
-  # smoke. The processor-expanded media sequence and response are capped
-  # together by cap_max_tokens_to_context in the inherited recipe.
-  max_total_sequence_length: 8192
+  # Use a 16K training context so the agent can retain two recent screenshots.
+  # The processor-expanded media sequence and response are capped together by
+  # cap_max_tokens_to_context in the inherited recipe.
+  max_total_sequence_length: ${oc.decode:${oc.env:OSWORLD_MAX_MODEL_LEN,16384}}
   megatron_cfg:
     env_vars:
       # The colocated policy reaches the allocator limit while Adam states are
@@ -51,7 +56,7 @@ policy:
     stop_token_ids: null
     stop_strings: null
     vllm_cfg:
-      max_model_len: 8192
+      max_model_len: ${oc.decode:${oc.env:OSWORLD_MAX_MODEL_LEN,16384}}
       # NeMo-Gym requires the OpenAI-compatible asynchronous generation worker.
       # The OSWorld integration adds the awaited Omni RADIO initialization path.
       async_engine: true
@@ -69,7 +74,9 @@ data:
   train:
     dataset_name: NemoGymDataset
     data_path: ${oc.env:OSWORLD_GRPO_TRAIN_DATA}
-  validation: null
+  validation:
+    dataset_name: NemoGymDataset
+    data_path: ${oc.env:OSWORLD_GRPO_VAL_DATA,""}
   default:
     dataset_name: NemoGymDataset
     env_name: nemo_gym
@@ -81,18 +88,23 @@ env:
   should_use_nemo_gym: true
   should_log_nemo_gym_responses: false
   nemo_gym:
-    num_workers: 4
+    num_workers: ${oc.decode:${oc.env:OSWORLD_NEMO_GYM_NUM_WORKERS,4}}
+    # Keep Gym server environments across Slurm resume segments. The path is
+    # fingerprinted by the submitter, so stale dependencies are never reused.
+    uv_venv_dir: ${oc.env:OSWORLD_GYM_VENV_DIR,/opt/gym_venvs}
+    uv_cache_dir: ${oc.env:UV_CACHE_DIR,/root/.cache/uv}
     # A sandbox allocation or guest-side task download can transiently fail
     # before the model emits any tokens. Retry the rollout batch rather than
     # aborting the entire training run with a misleading context-length error.
-    rollout_max_attempts_to_avoid_lp_nan: 3
+    rollout_max_attempts_to_avoid_lp_nan: ${oc.decode:${oc.env:OSWORLD_ROLLOUT_MAX_ATTEMPTS,8}}
     port_range_low: 5000
     port_range_high: 5999
     skip_venv_if_present: true
-    # OSWorld compacts image history, so train one exact turn per trajectory.
-    # Random selection covers early and late actions without concatenating
-    # non-contiguous prompts under the wrong conditioning context.
-    independent_turn_sampling: random
+    # OSWorld compacts image history, so each exact prompt/action pair is an
+    # independent sequence. Expand every turn only after trajectory-level GRPO
+    # grouping and dynamic sampling have computed reward statistics.
+    independent_turn_training: all
+    independent_turn_sampling: first
     config_paths:
     - responses_api_models/vllm_model/configs/vllm_model_for_training.yaml
     - responses_api_agents/nemotron_osworld/configs/nemotron_osworld.yaml
@@ -110,10 +122,10 @@ env:
           # Must exactly match policy.generation.temperature; the training
           # endpoint rejects off-policy request parameters.
           temperature: 1.0
-          # Temporary pre-compaction baseline: even two expanded screenshots
-          # can exceed 8K on long text histories. Keep only the current screen
-          # until token-aware multimodal context compaction is available.
-          max_image_history_length: 1
+          max_parallel_rollouts: ${oc.decode:${oc.env:OSWORLD_MAX_PARALLEL_ROLLOUTS,4}}
+          # Retain the current and immediately preceding screenshots. The 16K
+          # model limit leaves room for both images plus compacted text history.
+          max_image_history_length: ${oc.decode:${oc.env:OSWORLD_MAX_IMAGE_HISTORY_LENGTH,2}}
 
 logger:
   log_dir: logs/osworld-grpo

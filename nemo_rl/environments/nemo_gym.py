@@ -75,6 +75,7 @@ class NemoGymConfig(TypedDict):
     initial_global_config_dict: Dict[str, Any]
     processor: NotRequired[Any]
     independent_turn_sampling: NotRequired[str]
+    independent_turn_training: NotRequired[str]
     # Port range for Gym HTTP servers (head server + subprocess servers).
     # Defaults to DEFAULT_GYM_PORT_RANGE_LOW/HIGH (5000-5999) from
     # nemo_rl.distributed.virtual_cluster.  See the port layout there.
@@ -510,13 +511,12 @@ Output prompt token IDs: {output_item_dict["prompt_token_ids"]}
         processor: Any | None,
         trainable_output_items: list[dict[str, Any]],
     ) -> dict:
-        """Select one exact prompt-generation pair from a compacted VLM trajectory.
+        """Build exact prompt-generation pairs from a compacted VLM trajectory.
 
         OSWorld's three-image sliding window makes consecutive prompts
         non-contiguous. Concatenating those turns would train later actions
-        under a different context than the rollout policy used. Until variable
-        numbers of independent sequences per trajectory are supported, sample
-        one complete turn and apply the trajectory-level GRPO reward to it.
+        under a different context than the rollout policy used. Each turn is
+        therefore represented as its own independent training sequence.
         """
         if processor is None:
             raise ValueError(
@@ -603,6 +603,13 @@ Output prompt token IDs: {output_item_dict["prompt_token_ids"]}
                 )
             )
 
+        training_mode = self.cfg.get("independent_turn_training", "sample")
+        if training_mode not in {"sample", "all"}:
+            raise ValueError(
+                "independent_turn_training must be one of sample, all; "
+                f"got {training_mode!r}."
+            )
+
         sampling = self.cfg.get("independent_turn_sampling", "random")
         if sampling == "first":
             selected_idx = 0
@@ -626,12 +633,22 @@ Output prompt token IDs: {output_item_dict["prompt_token_ids"]}
             output_item_dict["prompt_str"] = prompt_str
             output_item_dict["generation_str"] = generation_str
 
-        selected_message_log = turns[selected_idx][0]
-        selected_message_log[0].update(
-            self._process_dynamic_multimodal_inputs(
-                processor,
-                turns[selected_idx][3],
+        turn_message_logs = []
+        turn_indices = range(len(turns)) if training_mode == "all" else [selected_idx]
+        for turn_idx in turn_indices:
+            message_log = turns[turn_idx][0]
+            message_log[0].update(
+                self._process_dynamic_multimodal_inputs(
+                    processor,
+                    turns[turn_idx][3],
+                )
             )
+            turn_message_logs.append(message_log)
+
+        selected_message_log = (
+            turn_message_logs[selected_idx]
+            if training_mode == "all"
+            else turn_message_logs[0]
         )
         grouping_user_message = {
             "role": "user",
@@ -643,6 +660,8 @@ Output prompt token IDs: {output_item_dict["prompt_token_ids"]}
             "input_message_log": [grouping_user_message],
             "full_result": nemo_gym_result,
             "independent_turn_sampled": True,
+            "independent_turn_training": training_mode,
+            "independent_turn_message_logs": turn_message_logs,
             "selected_turn_index": selected_idx,
             "trajectory_turn_count": len(turns),
         }

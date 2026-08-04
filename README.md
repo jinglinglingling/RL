@@ -9,6 +9,18 @@
 
 </div>
 
+## OSWorld GRPO integration
+
+This branch adds end-to-end online GRPO training and evaluation for OSWorld
+through NeMo Gym, OpenSandbox, vLLM, and Megatron. It includes reproducible
+Slurm recipes, multi-turn trajectory training, checkpoint evaluation, tiny
+overfit experiments, and a server-side watchdog for resilient long-running
+jobs.
+
+- [Training guide](docs/guides/osworld-grpo.md)
+- [Cell-2 evaluation guide](docs/guides/osworld-eval-cell2.md)
+- [Night watchdog guide](examples/nemo_gym/slurm/OSWORLD_NIGHT_WATCHDOG.md)
+
 ## 📣 News
 * [06/12/2026] [Minimax-M3](https://github.com/NVIDIA-NeMo/RL/tree/minimax-m3) Day 0 support by NeMo RL! More details on the [accuracy verifications](https://github.com/NVIDIA-NeMo/RL/blob/minimax-m3/docs/guides/minimax-m3.md). Thank you [vLLM for the shoutout](https://x.com/vllm_project/status/2065445062423826534
 ).

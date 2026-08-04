@@ -1,0 +1,25 @@
+defaults: vlm_grpo-nemotron-omni-30ba3b-osworld-1n8g-megatron.v1.yaml
+
+# Fast, intentionally contaminated overfit run used only to validate that the
+# OSWorld all-turn GRPO pipeline can learn. Do not report this as benchmark
+# performance.
+policy:
+  megatron_cfg:
+    scheduler:
+      # Twenty updates are too short for the inherited 50-step warmup. Reach the
+      # unchanged 2e-7 target LR after two optimizer steps.
+      lr_warmup_iters: 2
+      override_opt_param_scheduler: true
+
+data:
+  # Keep the 32-task repeated stream deterministic. Dynamic sampling may
+  # consume several candidate batches before one optimizer update.
+  shuffle: false
+
+checkpointing:
+  # Validation metrics/logs retain the Step-5 cadence. Keep only the newest
+  # large model checkpoint to avoid repeating the earlier disk-quota failure.
+  keep_top_k: 1
+
+cluster:
+  num_nodes: 4

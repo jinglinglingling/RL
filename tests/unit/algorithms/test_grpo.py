@@ -32,7 +32,9 @@ from nemo_rl.algorithms.grpo import (
     _apply_configured_message_level_advantage_penalties,
     _apply_mask_sample_filter,
     _apply_message_level_advantage_penalties,
+    _compute_grpo_advantages_from_rollout_stats,
     _default_grpo_save_state,
+    _expand_all_independent_turns,
     _raise_if_reward_penalties_enabled_without_nemo_gym,
     _resolve_message_level_advantage_penalties,
     _should_use_async_rollouts,
@@ -113,6 +115,78 @@ class TestMaskSampleFilter:
         assert torch.equal(
             repeated_batch["loss_multiplier"], torch.tensor([1.0, 0.5, 1.0])
         )
+
+
+def test_expand_all_independent_turns_preserves_trajectory_mapping_and_masks_padding():
+    def _turn(token_id: int) -> LLMMessageLogType:
+        return [
+            {"role": "user", "content": "", "token_ids": torch.tensor([token_id])},
+            {
+                "role": "assistant",
+                "content": "",
+                "token_ids": torch.tensor([token_id + 100]),
+                "generation_logprobs": torch.tensor([-0.1]),
+            },
+        ]
+
+    batch = BatchedDataDict(
+        {
+            "independent_turn_training": ["all", "all"],
+            "independent_turn_message_logs": [
+                [_turn(1), _turn(2)],
+                [_turn(3)],
+            ],
+            "message_log": [_turn(1), _turn(3)],
+            "length": torch.tensor([1, 1]),
+            "loss_multiplier": torch.ones(2),
+        }
+    )
+
+    expanded, trajectory_indices, num_real_turns = _expand_all_independent_turns(
+        batch, target_batch_size=4
+    )
+
+    assert num_real_turns == 3
+    assert trajectory_indices.tolist() == [0, 0, 1, 1]
+    assert [row[0]["token_ids"].item() for row in expanded["message_log"]] == [
+        1,
+        2,
+        3,
+        3,
+    ]
+    assert expanded["all_turn_padding"].tolist() == [False, False, False, True]
+    assert expanded["trajectory_index"].tolist() == [0, 0, 1, 1]
+    assert expanded["turn_index"].tolist() == [0, 1, 0, 0]
+    assert expanded["trajectory_turn_count"].tolist() == [2, 2, 1, 1]
+    assert expanded["loss_multiplier"].tolist() == [0.5, 0.5, 1.0, 0.0]
+    assert sum(expanded["loss_multiplier"][:2]).item() == pytest.approx(1.0)
+    assert expanded["loss_multiplier"][2].item() == pytest.approx(1.0)
+    assert "independent_turn_message_logs" not in expanded
+
+
+def test_grpo_advantages_use_aligned_rollout_statistics_after_dynamic_sampling():
+    rewards = torch.tensor([0.0, 1.0, 0.0, 1.0])
+    baseline = torch.tensor([0.25, 0.75, 0.5, 0.5])
+    std = torch.tensor([0.5, 0.5, 0.25, 0.25])
+    mask = torch.ones((4, 2))
+
+    advantages = _compute_grpo_advantages_from_rollout_stats(
+        rewards=rewards,
+        baseline=baseline,
+        std=std,
+        mask=mask,
+        normalize_rewards=True,
+    )
+
+    expected = torch.tensor(
+        [
+            [-0.5, -0.5],
+            [0.5, 0.5],
+            [-2.0, -2.0],
+            [2.0, 2.0],
+        ]
+    )
+    assert torch.allclose(advantages, expected, atol=1e-5)
 
 
 @pytest.fixture

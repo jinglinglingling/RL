@@ -13,10 +13,19 @@
 # limitations under the License.
 import os
 import subprocess
+from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from nemo_rl.utils.venvs import create_local_venv
+from nemo_rl.utils.venvs import (
+    DEFAULT_UV_HTTP_TIMEOUT_SECONDS,
+    DEFAULT_UV_LOCK_TIMEOUT_SECONDS,
+    VENV_READY_FILENAME,
+    _expected_venv_marker,
+    _is_venv_ready,
+    _uv_subprocess_env,
+    create_local_venv,
+)
 from tests.unit.conftest import TEST_ASSETS_DIR
 
 
@@ -48,3 +57,99 @@ def test_create_local_venv():
             # Verify the command executed successfully (return code 0)
             assert result.returncode == 0, f"Failed to import sphinx: {result.stderr}"
             assert "Sphinx package is installed" in result.stdout
+            assert (
+                Path(tempdir, "test_venv", VENV_READY_FILENAME).read_text()
+                == "unversioned:reusable"
+            )
+
+
+def test_venv_readiness_requires_matching_completion_marker(tmp_path):
+    venv_path = tmp_path / "actor"
+    python_path = venv_path / "bin" / "python"
+    python_path.parent.mkdir(parents=True)
+    python_path.write_text("#!/bin/sh\n")
+    python_path.chmod(0o755)
+
+    with patch.dict(
+        os.environ, {"NRL_VENV_FINGERPRINT": "lock-123"}, clear=False
+    ):
+        marker = _expected_venv_marker(force_rebuild=False)
+        assert not _is_venv_ready(venv_path, marker)
+
+        (venv_path / VENV_READY_FILENAME).write_text("stale:reusable")
+        assert not _is_venv_ready(venv_path, marker)
+
+        (venv_path / VENV_READY_FILENAME).write_text(marker)
+        assert _is_venv_ready(venv_path, marker)
+
+
+def test_forced_rebuild_marker_is_shared_within_slurm_job():
+    with patch.dict(
+        os.environ,
+        {
+            "NRL_VENV_FINGERPRINT": "lock-123",
+            "SLURM_JOB_ID": "456",
+        },
+        clear=False,
+    ):
+        assert _expected_venv_marker(force_rebuild=True) == "lock-123:force:456"
+
+
+def test_uv_subprocess_env_uses_multi_node_safe_defaults():
+    with patch.dict(os.environ, {}, clear=True):
+        env = _uv_subprocess_env("/tmp/actor")
+
+    assert env["UV_PROJECT_ENVIRONMENT"] == "/tmp/actor"
+    assert env["UV_LOCK_TIMEOUT"] == DEFAULT_UV_LOCK_TIMEOUT_SECONDS
+    assert env["UV_HTTP_TIMEOUT"] == DEFAULT_UV_HTTP_TIMEOUT_SECONDS
+    assert env["UV_LINK_MODE"] == "copy"
+
+
+def test_uv_subprocess_env_preserves_explicit_overrides():
+    with patch.dict(
+        os.environ,
+        {
+            "UV_LOCK_TIMEOUT": "42",
+            "UV_HTTP_TIMEOUT": "43",
+            "UV_LINK_MODE": "clone",
+        },
+        clear=True,
+    ):
+        env = _uv_subprocess_env("/tmp/actor")
+
+    assert env["UV_LOCK_TIMEOUT"] == "42"
+    assert env["UV_HTTP_TIMEOUT"] == "43"
+    assert env["UV_LINK_MODE"] == "clone"
+
+
+def test_uv_subprocess_env_limits_osworld_builds_to_h100():
+    with patch.dict(
+        os.environ,
+        {
+            "GRPO_ENV_FINGERPRINT": "fingerprint",
+            "OSWORLD_POOL_REF": "osworld-kvm",
+            "UV_CACHE_DIR": "/shared/cold-cache",
+        },
+        clear=True,
+    ):
+        env = _uv_subprocess_env("/tmp/actor")
+
+    assert env["NVTE_CUDA_ARCHS"] == "90"
+    assert env["TORCH_CUDA_ARCH_LIST"] == "9.0"
+    assert "UV_CACHE_DIR" not in env
+
+
+def test_uv_subprocess_env_allows_explicit_osworld_actor_cache():
+    with patch.dict(
+        os.environ,
+        {
+            "GRPO_ENV_FINGERPRINT": "fingerprint",
+            "OSWORLD_POOL_REF": "osworld-kvm",
+            "NRL_ACTOR_UV_CACHE_DIR": "/tmp/actor-cache",
+            "UV_CACHE_DIR": "/shared/driver-cache",
+        },
+        clear=True,
+    ):
+        env = _uv_subprocess_env("/tmp/actor")
+
+    assert env["UV_CACHE_DIR"] == "/tmp/actor-cache"

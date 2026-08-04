@@ -1,0 +1,25 @@
+defaults: vlm_grpo-nemotron-omni-30ba3b-osworld-1n8g-megatron.v1.yaml
+
+grpo:
+  val_period: 0
+  val_at_start: true
+  val_at_end: false
+  val_batch_size: ${oc.env:OSWORLD_VAL_BATCH_SIZE,4}
+  max_val_samples: ${oc.env:OSWORLD_MAX_VAL_SAMPLES,20}
+
+policy:
+  generation:
+    temperature: ${oc.decode:${oc.env:OSWORLD_EVAL_TEMPERATURE,0.6}}
+
+data:
+  validation:
+    dataset_name: NemoGymDataset
+    data_path: ${oc.env:OSWORLD_GRPO_VAL_DATA}
+
+env:
+  nemo_gym:
+    nemotron_osworld:
+      responses_api_agents:
+        nemotron_osworld:
+          max_steps: ${oc.env:OSWORLD_EVAL_MAX_STEPS,100}
+          temperature: ${oc.decode:${oc.env:OSWORLD_EVAL_TEMPERATURE,0.6}}

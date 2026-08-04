@@ -31,24 +31,75 @@ export OSWORLD_DEBUG_TRAJ_DIR="${OSWORLD_DEBUG_TRAJ_DIR:-}"
 export HF_HOME="${HF_HOME:-${ROOT}/.cache/huggingface}"
 export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
 export TRANSFORMERS_OFFLINE="${TRANSFORMERS_OFFLINE:-1}"
-export UV_CACHE_DIR_OVERRIDE="${UV_CACHE_DIR_OVERRIDE:-${ROOT}/.cache/uv-grpo}"
+
+if [[ -z "${GRPO_ENV_FINGERPRINT:-}" ]]; then
+  GRPO_ENV_FINGERPRINT="$(
+    {
+      sha256sum \
+        "${ROOT}/uv.lock" \
+        "${ROOT}/pyproject.toml" \
+        "${ROOT}/examples/nemo_gym/osworld-uv-overrides.txt" \
+        "${ROOT}/3rdparty/Gym-workspace/Gym/uv.lock" \
+        "${ROOT}/3rdparty/Gym-workspace/Gym/pyproject.toml" \
+        "${ROOT}/3rdparty/Gym-workspace/Gym/responses_api_agents/nemotron_osworld/requirements.txt" \
+        "${ROOT}/3rdparty/Gym-workspace/Gym/resources_servers/osworld/requirements.txt"
+      printf '%s\n' "${CONTAINER}"
+    } | sha256sum | cut -c1-16
+  )"
+fi
+export GRPO_ENV_FINGERPRINT
+export GRPO_PERSISTENT_ENV_ROOT="${GRPO_PERSISTENT_ENV_ROOT:-${ROOT}/.cache/osworld-grpo-envs/${GRPO_ENV_FINGERPRINT}}"
+if [[ -z "${UV_CACHE_DIR_OVERRIDE+x}" ]]; then
+  export UV_CACHE_DIR_OVERRIDE=""
+fi
+export UV_RUNTIME_CACHE_DIR="${UV_RUNTIME_CACHE_DIR:-${GRPO_PERSISTENT_ENV_ROOT}/uv-cache}"
 export UV_OVERRIDE="${UV_OVERRIDE:-${ROOT}/examples/nemo_gym/osworld-uv-overrides.txt}"
-export GRPO_ROOT_VENV="${GRPO_ROOT_VENV:-/tmp/nemo_rl_grpo_venv}"
-export NEMO_RL_VENV_DIR="${NEMO_RL_VENV_DIR:-/tmp/nemo_rl_actor_venvs}"
+export UV_LOCK_TIMEOUT="${UV_LOCK_TIMEOUT:-1800}"
+export UV_HTTP_TIMEOUT="${UV_HTTP_TIMEOUT:-300}"
+export UV_LINK_MODE="${UV_LINK_MODE:-copy}"
+# The production OSWorld pool is H100 (SM90). Transformer Engine otherwise
+# compiles every CUDA-13 target (75/80/89/90/100/120), adding tens of minutes.
+export NVTE_CUDA_ARCHS="${NVTE_CUDA_ARCHS:-90}"
+export TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST:-9.0}"
+export GRPO_ROOT_VENV="${GRPO_ROOT_VENV:-${GRPO_PERSISTENT_ENV_ROOT}/root}"
+# Ray workers execute actor environments from node-local storage.  Executing
+# one shared venv concurrently from several Lustre clients caused intermittent
+# missing-module and truncated-package failures.  The expensive downloads and
+# source builds remain deduplicated through the fingerprinted shared uv cache.
+export NEMO_RL_VENV_DIR="${NEMO_RL_VENV_DIR:-/tmp/nemo_rl_actor_venvs-${GRPO_ENV_FINGERPRINT}}"
+export OSWORLD_GYM_VENV_DIR="${OSWORLD_GYM_VENV_DIR:-/tmp/osworld_gym_venvs-${GRPO_ENV_FINGERPRINT}}"
 export UV_PROJECT_ENVIRONMENT="${GRPO_ROOT_VENV}"
 export VIRTUAL_ENV="${GRPO_ROOT_VENV}"
 export PATH="${GRPO_ROOT_VENV}/bin:${PATH}"
 export NRL_MAMBA_PREFILL_DECODE_SYNC="${NRL_MAMBA_PREFILL_DECODE_SYNC:-1}"
-export NRL_FORCE_REBUILD_VENVS="${NRL_FORCE_REBUILD_VENVS:-true}"
-# The available image predates PR #3290's exact MBridge and lockfile. Rebuild
-# worker environments from this checkout and acknowledge that known mismatch.
+export NRL_FORCE_REBUILD_VENVS="${NRL_FORCE_REBUILD_VENVS:-false}"
+export NRL_ALLOW_PARTIAL_VENV_ON_SYNC_FAILURE="${NRL_ALLOW_PARTIAL_VENV_ON_SYNC_FAILURE:-true}"
+# The image predates this checkout. Fingerprinted shared environments are built
+# once, validated, and then reused by every four-hour resume segment.
 export NRL_IGNORE_VERSION_MISMATCH=1
+export NRL_VENV_FINGERPRINT="${GRPO_ENV_FINGERPRINT}"
 export PYTHONUNBUFFERED=1
+export PYTHONDONTWRITEBYTECODE=1
 
 GRPO_MAX_NUM_STEPS="${GRPO_MAX_NUM_STEPS:-1}"
+GRPO_MAX_NUM_EPOCHS="${GRPO_MAX_NUM_EPOCHS:-1}"
 RESULTS_DIR="${RESULTS_DIR:-${ROOT}/results/osworld-grpo-smoke}"
+export OSWORLD_GRPO_VAL_DATA="${OSWORLD_GRPO_VAL_DATA:-}"
+export OSWORLD_VAL_BATCH_SIZE="${OSWORLD_VAL_BATCH_SIZE:-4}"
+export OSWORLD_MAX_VAL_SAMPLES="${OSWORLD_MAX_VAL_SAMPLES:-20}"
+export OSWORLD_EVAL_MAX_STEPS="${OSWORLD_EVAL_MAX_STEPS:-100}"
+export OSWORLD_VAL_PERIOD="${OSWORLD_VAL_PERIOD:-0}"
+export OSWORLD_VAL_AT_START="${OSWORLD_VAL_AT_START:-false}"
+export OSWORLD_VAL_AT_END="${OSWORLD_VAL_AT_END:-false}"
+export OSWORLD_NUM_PROMPTS_PER_STEP="${OSWORLD_NUM_PROMPTS_PER_STEP:-1}"
 export OSWORLD_NUM_GENERATIONS="${OSWORLD_NUM_GENERATIONS:-8}"
-export OSWORLD_TRAIN_GLOBAL_BATCH_SIZE="${OSWORLD_TRAIN_GLOBAL_BATCH_SIZE:-${OSWORLD_NUM_GENERATIONS}}"
+export OSWORLD_NEMO_GYM_NUM_WORKERS="${OSWORLD_NEMO_GYM_NUM_WORKERS:-4}"
+export OSWORLD_MAX_PARALLEL_ROLLOUTS="${OSWORLD_MAX_PARALLEL_ROLLOUTS:-4}"
+export OSWORLD_TRAIN_GLOBAL_BATCH_SIZE="${OSWORLD_TRAIN_GLOBAL_BATCH_SIZE:-$((OSWORLD_NUM_GENERATIONS * OSWORLD_MAX_STEPS))}"
+export OSWORLD_MAX_MODEL_LEN="${OSWORLD_MAX_MODEL_LEN:-16384}"
+export OSWORLD_MAX_IMAGE_HISTORY_LENGTH="${OSWORLD_MAX_IMAGE_HISTORY_LENGTH:-2}"
+export OSWORLD_USE_DYNAMIC_SAMPLING="${OSWORLD_USE_DYNAMIC_SAMPLING:-true}"
+export OSWORLD_DYNAMIC_SAMPLING_MAX_GEN_BATCHES="${OSWORLD_DYNAMIC_SAMPLING_MAX_GEN_BATCHES:-16}"
 WANDB_ENABLED="${WANDB_ENABLED:-false}"
 WANDB_ENTITY="${WANDB_ENTITY:-nvidia}"
 WANDB_PROJECT="${WANDB_PROJECT:-osworld-grpo}"
@@ -59,8 +110,22 @@ export WANDB_MODE="${WANDB_MODE:-online}"
 CHECKPOINTING_ENABLED="${CHECKPOINTING_ENABLED:-false}"
 CHECKPOINT_DIR="${CHECKPOINT_DIR:-${RESULTS_DIR}/checkpoints}"
 CHECKPOINT_SAVE_PERIOD="${CHECKPOINT_SAVE_PERIOD:-10}"
-CONFIG_PATH="examples/configs/recipes/vlm/vlm_grpo-nemotron-omni-30ba3b-osworld-1n8g-megatron.v1.yaml"
-mkdir -p "${HF_HOME}" "${UV_CACHE_DIR_OVERRIDE}" "${RESULTS_DIR}" "${CHECKPOINT_DIR}"
+PRETRAINED_CHECKPOINT_PATH="${PRETRAINED_CHECKPOINT_PATH:-}"
+PRETRAINED_CHECKPOINT_FORMAT="${PRETRAINED_CHECKPOINT_FORMAT:-megatron_bridge}"
+CONFIG_PATH="${CONFIG_PATH:-examples/configs/recipes/vlm/vlm_grpo-nemotron-omni-30ba3b-osworld-1n8g-megatron.v1.yaml}"
+PRETRAINED_OVERRIDES=""
+if [[ -n "${PRETRAINED_CHECKPOINT_PATH}" ]]; then
+  PRETRAINED_OVERRIDES="++checkpointing.pretrained_checkpoint.path='${PRETRAINED_CHECKPOINT_PATH}' ++checkpointing.pretrained_checkpoint.format='${PRETRAINED_CHECKPOINT_FORMAT}'"
+fi
+mkdir -p \
+  "${HF_HOME}" \
+  "${RESULTS_DIR}" \
+  "${CHECKPOINT_DIR}" \
+  "${GRPO_PERSISTENT_ENV_ROOT}" \
+  "${UV_RUNTIME_CACHE_DIR}"
+if [[ -n "${UV_CACHE_DIR_OVERRIDE}" ]]; then
+  mkdir -p "${UV_CACHE_DIR_OVERRIDE}"
+fi
 if [[ -n "${OSWORLD_DEBUG_TRAJ_DIR}" ]]; then
   mkdir -p "${OSWORLD_DEBUG_TRAJ_DIR}"
 fi
@@ -77,28 +142,35 @@ while IFS= read -r env_var; do
   fi
 done < <(compgen -e)
 
-export SETUP_COMMAND="rm -rf '${GRPO_ROOT_VENV}' '${NEMO_RL_VENV_DIR}' && \
-export UV_PROJECT_ENVIRONMENT='${GRPO_ROOT_VENV}' VIRTUAL_ENV='${GRPO_ROOT_VENV}' NEMO_RL_VENV_DIR='${NEMO_RL_VENV_DIR}' && \
-export PATH='${GRPO_ROOT_VENV}/bin':\"\${PATH}\" && \
-cd '${ROOT}' && \
-uv sync --locked --reinstall && \
-uv pip install --python '${GRPO_ROOT_VENV}/bin/python' --no-cache --reinstall 'ray[default]==2.55.1' && \
-if [[ '${WANDB_ENABLED}' == 'true' ]]; then env -u UV_OVERRIDE uv pip install --python '${GRPO_ROOT_VENV}/bin/python' --no-cache --reinstall 'wandb==0.21.0' 'protobuf==6.33.5'; fi && \
-uv run --locked --no-sync python -c 'from transformers import AutoProcessor; import fastapi, ray, ray._private.node, starlette, transformers, wandb; print(\"Dependency preflight:\", transformers.__version__, fastapi.__version__, starlette.__version__, ray.__version__, wandb.__version__)'"
+export SETUP_COMMAND="export ROOT='${ROOT}' GRPO_ROOT_VENV='${GRPO_ROOT_VENV}' GRPO_ENV_FINGERPRINT='${GRPO_ENV_FINGERPRINT}' && \
+export UV_OVERRIDE='${UV_OVERRIDE}' UV_RUNTIME_CACHE_DIR='${UV_RUNTIME_CACHE_DIR}' UV_LOCK_TIMEOUT='${UV_LOCK_TIMEOUT}' UV_HTTP_TIMEOUT='${UV_HTTP_TIMEOUT}' UV_LINK_MODE='${UV_LINK_MODE}' NVTE_CUDA_ARCHS='${NVTE_CUDA_ARCHS}' TORCH_CUDA_ARCH_LIST='${TORCH_CUDA_ARCH_LIST}' WANDB_ENABLED='${WANDB_ENABLED}' && \
+bash '${ROOT}/examples/nemo_gym/slurm/ensure_osworld_grpo_root_env.sh'"
 
 export COMMAND="cd '${ROOT}' && \
 export HF_HOME='${HF_HOME}' HF_HUB_OFFLINE='${HF_HUB_OFFLINE}' TRANSFORMERS_OFFLINE='${TRANSFORMERS_OFFLINE}' && \
-export UV_OVERRIDE='${UV_OVERRIDE}' && \
+unset UV_CACHE_DIR && export UV_OVERRIDE='${UV_OVERRIDE}' UV_LOCK_TIMEOUT='${UV_LOCK_TIMEOUT}' UV_HTTP_TIMEOUT='${UV_HTTP_TIMEOUT}' UV_LINK_MODE='${UV_LINK_MODE}' NVTE_CUDA_ARCHS='${NVTE_CUDA_ARCHS}' TORCH_CUDA_ARCH_LIST='${TORCH_CUDA_ARCH_LIST}' && \
+export UV_PROJECT_ENVIRONMENT='${GRPO_ROOT_VENV}' VIRTUAL_ENV='${GRPO_ROOT_VENV}' PATH='${GRPO_ROOT_VENV}/bin':\"\${PATH}\" && \
+export NEMO_RL_VENV_DIR='${NEMO_RL_VENV_DIR}' NRL_VENV_FINGERPRINT='${NRL_VENV_FINGERPRINT}' OSWORLD_GYM_VENV_DIR='${OSWORLD_GYM_VENV_DIR}' && \
 export OSWORLD_GRPO_TRAIN_DATA='${OSWORLD_GRPO_TRAIN_DATA}' OSWORLD_MAX_STEPS='${OSWORLD_MAX_STEPS}' OSWORLD_DEBUG_TRAJ_DIR='${OSWORLD_DEBUG_TRAJ_DIR}' && \
-export NRL_MAMBA_PREFILL_DECODE_SYNC='${NRL_MAMBA_PREFILL_DECODE_SYNC}' PYTHONUNBUFFERED=1 && \
-export NRL_FORCE_REBUILD_VENVS='${NRL_FORCE_REBUILD_VENVS}' NRL_IGNORE_VERSION_MISMATCH=1 && \
-uv run --locked --no-sync examples/run_vlm_grpo.py \
+export OSWORLD_GRPO_VAL_DATA='${OSWORLD_GRPO_VAL_DATA}' OSWORLD_VAL_BATCH_SIZE='${OSWORLD_VAL_BATCH_SIZE}' OSWORLD_MAX_VAL_SAMPLES='${OSWORLD_MAX_VAL_SAMPLES}' OSWORLD_EVAL_MAX_STEPS='${OSWORLD_EVAL_MAX_STEPS}' && \
+export OSWORLD_NUM_PROMPTS_PER_STEP='${OSWORLD_NUM_PROMPTS_PER_STEP}' OSWORLD_NUM_GENERATIONS='${OSWORLD_NUM_GENERATIONS}' OSWORLD_TRAIN_GLOBAL_BATCH_SIZE='${OSWORLD_TRAIN_GLOBAL_BATCH_SIZE}' && \
+export OSWORLD_NEMO_GYM_NUM_WORKERS='${OSWORLD_NEMO_GYM_NUM_WORKERS}' OSWORLD_MAX_PARALLEL_ROLLOUTS='${OSWORLD_MAX_PARALLEL_ROLLOUTS}' && \
+export OSWORLD_MAX_MODEL_LEN='${OSWORLD_MAX_MODEL_LEN}' OSWORLD_MAX_IMAGE_HISTORY_LENGTH='${OSWORLD_MAX_IMAGE_HISTORY_LENGTH}' && \
+export OSWORLD_USE_DYNAMIC_SAMPLING='${OSWORLD_USE_DYNAMIC_SAMPLING}' OSWORLD_DYNAMIC_SAMPLING_MAX_GEN_BATCHES='${OSWORLD_DYNAMIC_SAMPLING_MAX_GEN_BATCHES}' && \
+export NRL_MAMBA_PREFILL_DECODE_SYNC='${NRL_MAMBA_PREFILL_DECODE_SYNC}' PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 && \
+export NRL_FORCE_REBUILD_VENVS='${NRL_FORCE_REBUILD_VENVS}' NRL_ALLOW_PARTIAL_VENV_ON_SYNC_FAILURE='${NRL_ALLOW_PARTIAL_VENV_ON_SYNC_FAILURE}' NRL_IGNORE_VERSION_MISMATCH=1 && \
+'${GRPO_ROOT_VENV}/bin/python' examples/run_vlm_grpo.py \
   --config '${CONFIG_PATH}' \
   grpo.max_num_steps=${GRPO_MAX_NUM_STEPS} \
+  grpo.max_num_epochs=${GRPO_MAX_NUM_EPOCHS} \
+  grpo.val_period=${OSWORLD_VAL_PERIOD} \
+  grpo.val_at_start=${OSWORLD_VAL_AT_START} \
+  grpo.val_at_end=${OSWORLD_VAL_AT_END} \
   cluster.num_nodes=${NUM_NODES} \
   checkpointing.enabled=${CHECKPOINTING_ENABLED} \
   checkpointing.checkpoint_dir='${CHECKPOINT_DIR}' \
   checkpointing.save_period=${CHECKPOINT_SAVE_PERIOD} \
+  ${PRETRAINED_OVERRIDES} \
   +env.nemo_gym.nemotron_osworld.responses_api_agents.nemotron_osworld.debug_trajectory_dir='${OSWORLD_DEBUG_TRAJ_DIR}' \
   logger.wandb_enabled=${WANDB_ENABLED} \
   +logger.wandb.entity='${WANDB_ENTITY}' \
@@ -114,6 +186,7 @@ SBATCH_PARTITION="${SBATCH_PARTITION:-batch}"
 SBATCH_TIME="${SBATCH_TIME:-04:00:00}"
 JOB_NAME="${JOB_NAME:-osworld-grpo-smoke}"
 SBATCH_DEPENDENCY="${SBATCH_DEPENDENCY:-}"
+SBATCH_DEPENDENCY_TYPE="${SBATCH_DEPENDENCY_TYPE:-afterany}"
 
 cat <<EOF
 Submitting OSWorld GRPO
@@ -121,11 +194,18 @@ Submitting OSWorld GRPO
   container:         ${CONTAINER}
   model:             nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-BF16
   topology:          ${NUM_NODES} node(s) x 8 GPU
-  sandboxes:         ${OPENSANDBOX_DOMAIN}, pool=${OSWORLD_POOL_REF}, concurrency=4
+  sandboxes:         ${OPENSANDBOX_DOMAIN}, pool=${OSWORLD_POOL_REF}, concurrency=${OSWORLD_MAX_PARALLEL_ROLLOUTS}
   train data:        ${OSWORLD_GRPO_TRAIN_DATA}
-  GRPO steps:        ${GRPO_MAX_NUM_STEPS}
+  validation data:   ${OSWORLD_GRPO_VAL_DATA:-disabled}
+  validation cadence:start=${OSWORLD_VAL_AT_START}, every ${OSWORLD_VAL_PERIOD} steps, end=${OSWORLD_VAL_AT_END}
+  pretrained ckpt:  ${PRETRAINED_CHECKPOINT_PATH:-base model}
+  GRPO steps/epochs: ${GRPO_MAX_NUM_STEPS}/${GRPO_MAX_NUM_EPOCHS}
+  prompts/step:      ${OSWORLD_NUM_PROMPTS_PER_STEP}
   rollouts/group:    ${OSWORLD_NUM_GENERATIONS}
+  NeMo-Gym workers:  ${OSWORLD_NEMO_GYM_NUM_WORKERS}
   train global batch:${OSWORLD_TRAIN_GLOBAL_BATCH_SIZE}
+  model/image history:${OSWORLD_MAX_MODEL_LEN} tokens / ${OSWORLD_MAX_IMAGE_HISTORY_LENGTH} images
+  dynamic sampling:  ${OSWORLD_USE_DYNAMIC_SAMPLING}, max batches=${OSWORLD_DYNAMIC_SAMPLING_MAX_GEN_BATCHES}
   rollout max steps: ${OSWORLD_MAX_STEPS}
   debug screenshots: ${OSWORLD_DEBUG_TRAJ_DIR:-disabled}
   wandb:             ${WANDB_ENABLED}, mode=${WANDB_MODE}, entity=${WANDB_ENTITY}, project=${WANDB_PROJECT}, run=${WANDB_RUN_NAME}, version=0.21.0
@@ -145,7 +225,7 @@ SBATCH_ARGS=(
   --export=ALL
 )
 if [[ -n "${SBATCH_DEPENDENCY}" ]]; then
-  SBATCH_ARGS+=(--dependency="afterany:${SBATCH_DEPENDENCY}")
+  SBATCH_ARGS+=(--dependency="${SBATCH_DEPENDENCY_TYPE}:${SBATCH_DEPENDENCY}")
 fi
 
 exec sbatch "${SBATCH_ARGS[@]}" "${ROOT}/ray.sub"

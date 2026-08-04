@@ -577,6 +577,9 @@ def setup(
         independent_turn_sampling = nemo_gym_dict.pop(
             "independent_turn_sampling", "random"
         )
+        independent_turn_training = nemo_gym_dict.pop(
+            "independent_turn_training", "sample"
+        )
         # Pass prebuilt cache + venv dirs through the global config so the gym reuses
         # image-baked venvs instead of rebuilding them.
         uv_cache_dir = get_nemo_gym_uv_cache_dir()
@@ -593,6 +596,7 @@ def setup(
             require_routed_experts=router_replay_enabled(policy_config),
             processor=processor,
             independent_turn_sampling=independent_turn_sampling,
+            independent_turn_training=independent_turn_training,
             initial_global_config_dict=nemo_gym_dict,
         )
         nemo_gym_opts = {}
@@ -607,6 +611,12 @@ def setup(
                 **os.environ,
                 "VIRTUAL_ENV": nemo_gym_py_exec,
                 "UV_PROJECT_ENVIRONMENT": nemo_gym_py_exec,
+                # Gym creates additional node-local service venvs. Those
+                # installers share the OSWorld uv cache across nodes/jobs, so
+                # tolerate long source-build locks and slow wheel downloads.
+                "UV_LOCK_TIMEOUT": os.environ.get("UV_LOCK_TIMEOUT", "1800"),
+                "UV_HTTP_TIMEOUT": os.environ.get("UV_HTTP_TIMEOUT", "300"),
+                "UV_LINK_MODE": os.environ.get("UV_LINK_MODE", "copy"),
             },
         }
         actor = NemoGym.options(**nemo_gym_opts).remote(nemo_gym_cfg)
@@ -1834,6 +1844,101 @@ def _apply_mask_sample_filter(repeated_batch: BatchedDataDict[DatumSpec]) -> int
     return num_masked
 
 
+def _expand_all_independent_turns(
+    repeated_batch: BatchedDataDict[DatumSpec],
+    target_batch_size: int,
+) -> tuple[BatchedDataDict[DatumSpec], torch.Tensor | None, int]:
+    """Expand compacted VLM trajectories into exact per-turn training rows.
+
+    Dynamic sampling and GRPO reward statistics run before this helper, while
+    the batch still has one row per trajectory. The returned index maps each
+    turn back to that trajectory so its trajectory-level advantage can be
+    broadcast without length-weighting the reward baseline.
+    """
+    training_modes = repeated_batch.get("independent_turn_training", [])
+    if not training_modes or not any(mode == "all" for mode in training_modes):
+        return repeated_batch, None, repeated_batch.size
+
+    if not all(mode == "all" for mode in training_modes):
+        raise ValueError(
+            "A GRPO batch cannot mix all-turn and sampled-turn trajectories."
+        )
+
+    per_trajectory_turns = repeated_batch["independent_turn_message_logs"]
+    if not all(turns for turns in per_trajectory_turns):
+        raise ValueError("All-turn training requires at least one turn per trajectory.")
+
+    source_indices: list[int] = []
+    message_logs: list[LLMMessageLogType] = []
+    turn_indices: list[int] = []
+    turn_weights: list[float] = []
+    trajectory_turn_counts: list[int] = []
+    for trajectory_idx, turns in enumerate(per_trajectory_turns):
+        turn_count = len(turns)
+        source_indices.extend([trajectory_idx] * turn_count)
+        message_logs.extend(turns)
+        turn_indices.extend(range(turn_count))
+        turn_weights.extend([1.0 / turn_count] * turn_count)
+        trajectory_turn_counts.extend([turn_count] * turn_count)
+
+    num_real_turns = len(message_logs)
+    if num_real_turns > target_batch_size:
+        raise ValueError(
+            "Expanded all-turn batch exceeds policy.train_global_batch_size: "
+            f"{num_real_turns} > {target_batch_size}. Increase the global batch "
+            "size so one optimizer update can include every rollout turn."
+        )
+
+    num_padding = target_batch_size - num_real_turns
+    if num_padding:
+        source_indices.extend([source_indices[-1]] * num_padding)
+        message_logs.extend([message_logs[-1]] * num_padding)
+        turn_indices.extend([turn_indices[-1]] * num_padding)
+        turn_weights.extend([0.0] * num_padding)
+        trajectory_turn_counts.extend(
+            [trajectory_turn_counts[-1]] * num_padding
+        )
+
+    trajectory_indices = torch.tensor(source_indices, dtype=torch.long)
+    expanded_batch = repeated_batch.select_indices(source_indices)
+    expanded_batch.pop("independent_turn_message_logs", None)
+    expanded_batch["message_log"] = message_logs
+    expanded_batch["length"] = torch.tensor(
+        [len(message_log[0]["token_ids"]) for message_log in message_logs]
+    )
+    expanded_batch["all_turn_padding"] = torch.tensor(
+        [False] * num_real_turns + [True] * num_padding,
+        dtype=torch.bool,
+    )
+    expanded_batch["trajectory_index"] = trajectory_indices
+    expanded_batch["turn_index"] = torch.tensor(turn_indices, dtype=torch.long)
+    expanded_batch["trajectory_turn_count"] = torch.tensor(
+        trajectory_turn_counts, dtype=torch.long
+    )
+    loss_multiplier = expanded_batch["loss_multiplier"].clone()
+    expanded_batch["loss_multiplier"] = loss_multiplier * torch.tensor(
+        turn_weights, dtype=loss_multiplier.dtype
+    )
+    return expanded_batch, trajectory_indices, num_real_turns
+
+
+def _compute_grpo_advantages_from_rollout_stats(
+    rewards: torch.Tensor,
+    baseline: torch.Tensor,
+    std: torch.Tensor,
+    mask: torch.Tensor,
+    normalize_rewards: bool,
+) -> torch.Tensor:
+    """Use rollout-time GRPO statistics that remain aligned after DAPO caching."""
+    advantages = (rewards - baseline).unsqueeze(-1)
+    if normalize_rewards:
+        non_zero_std_mask = std > 0
+        advantages[non_zero_std_mask] = advantages[non_zero_std_mask] / (
+            std.unsqueeze(-1)[non_zero_std_mask] + 1e-6
+        )
+    return advantages.expand(mask.shape)
+
+
 def _should_use_nemo_gym(master_config: MasterConfig) -> bool:
     """Determine if NeMo-Gym should be used for rollouts and validation based on the configuration."""
     env_config = master_config.env
@@ -2715,6 +2820,30 @@ def grpo_train(
                         prompt_ids_for_adv = prompt_batched_flat["token_ids"]
                         del initial_prompt_message_logs
                         del prompt_batched_flat
+
+                    trajectory_rewards_for_adv = None
+                    trajectory_baseline_for_adv = None
+                    trajectory_std_for_adv = None
+                    turn_to_trajectory = None
+                    repeated_batch, turn_to_trajectory, num_real_turns = (
+                        _expand_all_independent_turns(
+                            repeated_batch,
+                            target_batch_size=master_config.policy[
+                                "train_global_batch_size"
+                            ],
+                        )
+                    )
+                    if turn_to_trajectory is not None:
+                        trajectory_rewards_for_adv = rewards
+                        trajectory_baseline_for_adv = baseline
+                        trajectory_std_for_adv = std
+                        rewards = trajectory_rewards_for_adv.index_select(
+                            0, turn_to_trajectory
+                        )
+                        metrics["all_turn_training/real_turns"] = num_real_turns
+                        metrics["all_turn_training/padded_turns"] = (
+                            repeated_batch.size - num_real_turns
+                        )
                     del input_ids
                     del baseline
                     del std
@@ -2891,14 +3020,46 @@ def grpo_train(
                     sample_mask = train_data["sample_mask"]
                     mask = token_mask * sample_mask.unsqueeze(-1)
 
-                    train_data["advantages"] = adv_estimator.compute_advantage(
-                        prompt_ids=prompt_ids_for_adv,
-                        rewards=rewards,
-                        mask=mask,
-                        repeated_batch=repeated_batch,
-                        logprobs_policy=train_data["prev_logprobs"],
-                        logprobs_reference=train_data.get("reference_policy_logprobs"),
-                    )
+                    if turn_to_trajectory is not None:
+                        if not isinstance(adv_estimator, GRPOAdvantageEstimator):
+                            raise ValueError(
+                                "All-turn independent VLM training currently "
+                                "supports only the GRPO advantage estimator."
+                            )
+                        trajectory_advantages = (
+                            _compute_grpo_advantages_from_rollout_stats(
+                                rewards=trajectory_rewards_for_adv,
+                                baseline=trajectory_baseline_for_adv,
+                                std=trajectory_std_for_adv,
+                                mask=torch.ones(
+                                    (len(trajectory_rewards_for_adv), 1),
+                                    dtype=mask.dtype,
+                                    device=mask.device,
+                                ),
+                                normalize_rewards=adv_estimator.normalize_rewards,
+                            )
+                        )
+                        train_data["advantages"] = trajectory_advantages.index_select(
+                            0, turn_to_trajectory.to(trajectory_advantages.device)
+                        ).expand(mask.shape)
+                        advantages_for_log = trajectory_advantages
+                        del trajectory_advantages
+                        del trajectory_rewards_for_adv
+                        del trajectory_baseline_for_adv
+                        del trajectory_std_for_adv
+                        del turn_to_trajectory
+                    else:
+                        train_data["advantages"] = adv_estimator.compute_advantage(
+                            prompt_ids=prompt_ids_for_adv,
+                            rewards=rewards,
+                            mask=mask,
+                            repeated_batch=repeated_batch,
+                            logprobs_policy=train_data["prev_logprobs"],
+                            logprobs_reference=train_data.get(
+                                "reference_policy_logprobs"
+                            ),
+                        )
+                        advantages_for_log = train_data["advantages"]
                     del prompt_ids_for_adv
 
                     # Log rewards and advantages information
@@ -2907,8 +3068,9 @@ def grpo_train(
                         total_steps=total_steps,
                         metrics=metrics,
                         baseline=baseline_for_log,
-                        advantages=train_data["advantages"],
+                        advantages=advantages_for_log,
                     )
+                    del advantages_for_log
                     del baseline_for_log
 
                     penalty_metrics = (
@@ -3400,16 +3562,18 @@ def validate(
         total_rewards = []
         total_lengths = []
         all_message_logs = []  # Collect all message logs
+        all_task_ids = []
+        additional_metrics_to_report = dict()
 
+        max_val_samples = master_config.grpo["max_val_samples"]
+        val_batch_size = master_config.grpo["val_batch_size"]
         max_batches = (
-            master_config.grpo["max_val_samples"]
-            // master_config.grpo["val_batch_size"]
-        )
+            max_val_samples + val_batch_size - 1
+        ) // val_batch_size
         for batch_idx, val_batch in enumerate(val_dataloader):
             if batch_idx >= max_batches:
                 break
 
-            additional_metrics_to_report = dict()
             # Generate responses (updates the LLMMessageLogType in batch_with_msg_logs)
             # Use async rollouts when enabled by config/backend defaults.
             # We cascade NeMo-Gym first since NeMo-Gym also uses async rollouts.
@@ -3454,6 +3618,8 @@ def validate(
 
             total_rewards.extend(val_batch["total_reward"].tolist())
             total_lengths.append(gen_metrics["mean_gen_tokens_per_sample"])
+            if "osworld_task_id" in val_batch:
+                all_task_ids.extend(val_batch["osworld_task_id"])
 
             # Collect message logs for later display
             to_env = [
@@ -3519,6 +3685,8 @@ def validate(
             "content": all_message_logs,
             "rewards": total_rewards,
         }
+        if all_task_ids:
+            val_log_data["osworld_task_id"] = all_task_ids
         logger.log_batched_dict_as_jsonl(val_log_data, f"val_data_step{step}.jsonl")
 
     # Make sure to reset the timer after validation

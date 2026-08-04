@@ -2042,6 +2042,12 @@ def run_async_nemo_gym_rollout(
             "independent_turn_sampled": [
                 bool(r.get("independent_turn_sampled", False)) for r in results
             ],
+            "independent_turn_training": [
+                r.get("independent_turn_training", "sample") for r in results
+            ],
+            "independent_turn_message_logs": [
+                r.get("independent_turn_message_logs", []) for r in results
+            ],
         }
     )
 

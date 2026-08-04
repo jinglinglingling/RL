@@ -227,7 +227,7 @@ def test_nemo_gym_postprocess_uses_batch_decode():
     assert nemo_gym_result["response"]["output"][1]["generation_str"] == "6 7"
 
 
-def test_nemo_gym_postprocess_samples_exact_compacted_multimodal_turn():
+def test_nemo_gym_postprocess_expands_all_exact_compacted_multimodal_turns():
     class _Tokenizer:
         model_input_names = ["input_ids"]
 
@@ -240,13 +240,12 @@ def test_nemo_gym_postprocess_samples_exact_compacted_multimodal_turn():
         tokenizer = _Tokenizer()
 
         def __call__(self, *, text, images, return_tensors):
-            assert text == "<image>\n<image>"
-            assert len(images) == 2
+            assert text == "\n".join(["<image>"] * len(images))
             assert return_tensors == "pt"
             return {
                 "input_ids": torch.tensor([[1]]),
-                "pixel_values": torch.ones(2, 3, 2, 2),
-                "imgs_sizes": torch.tensor([[2, 2], [2, 2]]),
+                "pixel_values": torch.ones(len(images), 3, 2, 2),
+                "imgs_sizes": torch.tensor([[2, 2]] * len(images)),
             }
 
     image_buffer = BytesIO()
@@ -284,6 +283,7 @@ def test_nemo_gym_postprocess_samples_exact_compacted_multimodal_turn():
             "base_urls": [],
             "initial_global_config_dict": {},
             "independent_turn_sampling": "last",
+            "independent_turn_training": "all",
         }
     )
 
@@ -294,8 +294,16 @@ def test_nemo_gym_postprocess_samples_exact_compacted_multimodal_turn():
     )
 
     assert result["independent_turn_sampled"] is True
+    assert result["independent_turn_training"] == "all"
     assert result["selected_turn_index"] == 1
     assert result["trajectory_turn_count"] == 2
+    assert len(result["independent_turn_message_logs"]) == 2
+    assert result["independent_turn_message_logs"][0][0][
+        "pixel_values"
+    ].as_tensor().shape == (1, 3, 2, 2)
+    assert result["independent_turn_message_logs"][1][0][
+        "pixel_values"
+    ].as_tensor().shape == (2, 3, 2, 2)
     assert result["input_message_log"][0]["token_ids"].tolist() == [1, 10]
     assert result["message_log"][0]["token_ids"].tolist() == [1, 20, 21]
     assert result["message_log"][1]["token_ids"].tolist() == [22, 23]
