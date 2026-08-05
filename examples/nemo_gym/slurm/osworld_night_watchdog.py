@@ -79,6 +79,7 @@ SAFE_SUBMIT_ENV_KEYS = {
     "SBATCH_PARTITION",
     "SBATCH_TIME",
     "SBATCH_MEM",
+    "RAY_memory_usage_threshold",
     "NUM_NODES",
     "GRPO_MAX_NUM_STEPS",
     "OSWORLD_MAX_STEPS",
