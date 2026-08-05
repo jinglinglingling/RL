@@ -150,7 +150,7 @@
         "SBATCH_ACCOUNT": "coreai_dlalgo_nemorl",
         "SBATCH_PARTITION": "batch",
         "SBATCH_TIME": "04:00:00",
-        "SBATCH_MEM": "1024G",
+        "SBATCH_MEM": "1536G",
         "NUM_NODES": "4",
         "GRPO_MAX_NUM_STEPS": "40",
         "OSWORLD_NUM_PROMPTS_PER_STEP": "8",

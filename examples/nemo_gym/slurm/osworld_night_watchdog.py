@@ -448,9 +448,28 @@ class Watchdog:
             return failure
         stat = path.stat()
         text = self._read_log_tail(path)
+        job_id = path.parent.name.removesuffix("-logs")
+        state_result = self._run(
+            [
+                "sacct",
+                "-j",
+                job_id,
+                "--format=State",
+                "-X",
+                "-n",
+                "-P",
+            ],
+            timeout=min(self.command_timeout, 30),
+        )
+        slurm_state = (
+            state_result.stdout.strip().splitlines()[0].strip()
+            if state_result.returncode == 0 and state_result.stdout.strip()
+            else ""
+        )
+        classification_text = f"SLURM_STATE={slurm_state}\n{text}"
         failure = classify_log(
-            text,
-            event_seed=f"{path}:{stat.st_mtime_ns}:{stat.st_size}",
+            classification_text,
+            event_seed=f"{path}:{stat.st_mtime_ns}:{stat.st_size}:{slurm_state}",
         )
         return Failure(
             category=failure.category,
@@ -562,7 +581,7 @@ class Watchdog:
         if head_result.returncode != 0:
             raise RuntimeError("Could not read git HEAD before agent run")
         status_result = self._run(
-            ["git", "status", "--porcelain=v1", "--untracked-files=all"]
+            ["git", "status", "--porcelain=v1", "--untracked-files=normal"]
         )
         if status_result.returncode != 0:
             raise RuntimeError("Could not snapshot working tree before agent run")
