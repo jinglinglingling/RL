@@ -129,23 +129,23 @@
       }
     },
     {
-      "name": "clean-r3-t15-b8r8-lr2e7-32k3img-4n",
-      "results_dir": "results/osworld-grpo-formal/osworld-overfit32-clean-r3-t15-b8r8-lr2e7-32k3img-4n-20260805",
-      "checkpoint_status": "results/osworld-grpo-formal/osworld-overfit32-clean-r3-t15-b8r8-lr2e7-32k3img-4n-20260805/checkpoints/latest_checkpoint_status.json",
+      "name": "clean-r3-t15-b8r8-lr2e7-24k3img-4n",
+      "results_dir": "results/osworld-grpo-formal/osworld-overfit32-clean-r3-t15-b8r8-lr2e7-24k3img-4n-20260805",
+      "checkpoint_status": "results/osworld-grpo-formal/osworld-overfit32-clean-r3-t15-b8r8-lr2e7-24k3img-4n-20260805/checkpoints/latest_checkpoint_status.json",
       "target_step": 40,
       "submit_script": "examples/nemo_gym/slurm/submit_osworld_overfit32_fast.sh",
       "job_name_prefixes": [
-        "osw-ctx32k3-lr2",
-        "osw-ctx32k3-lr2-"
+        "osw-ctx24k3-lr2",
+        "osw-ctx24k3-lr2-"
       ],
-      "submit_job_name_prefix": "osw-ctx32k3-lr2-",
+      "submit_job_name_prefix": "osw-ctx24k3-lr2-",
       "submit_env": {
         "NRL_FORCE_REBUILD_VENVS": "false",
         "UV_CACHE_DIR_OVERRIDE": "",
         "WANDB_ENABLED": "true",
-        "RUN_NAME": "osworld-overfit32-clean-r3-t15-b8r8-lr2e7-32k3img-4n-20260805",
-        "WANDB_RUN_NAME": "osworld-overfit32-clean-r3-t15-b8r8-lr2e7-32k3img-4n-20260805",
-        "WANDB_RUN_ID": "osworld-overfit32-clean-r3-t15-b8r8-lr2e7-32k3img-4n-20260805",
+        "RUN_NAME": "osworld-overfit32-clean-r3-t15-b8r8-lr2e7-24k3img-4n-20260805",
+        "WANDB_RUN_NAME": "osworld-overfit32-clean-r3-t15-b8r8-lr2e7-24k3img-4n-20260805",
+        "WANDB_RUN_ID": "osworld-overfit32-clean-r3-t15-b8r8-lr2e7-24k3img-4n-20260805",
         "SBATCH_DEPENDENCY_TYPE": "afternotok",
         "SBATCH_ACCOUNT": "coreai_dlalgo_nemorl",
         "SBATCH_PARTITION": "batch",
@@ -160,7 +160,7 @@
         "OSWORLD_MAX_PARALLEL_ROLLOUTS": "64",
         "OSWORLD_GENERATION_BATCH_SIZE": "32",
         "OSWORLD_LEARNING_RATE": "2e-7",
-        "OSWORLD_MAX_MODEL_LEN": "32768",
+        "OSWORLD_MAX_MODEL_LEN": "24576",
         "OSWORLD_MAX_IMAGE_HISTORY_LENGTH": "3",
         "OSWORLD_CONTEXT_PARALLEL_SIZE": "4",
         "OSWORLD_VAL_BATCH_SIZE": "64",
