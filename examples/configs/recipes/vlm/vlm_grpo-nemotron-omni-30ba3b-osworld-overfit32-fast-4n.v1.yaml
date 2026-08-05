@@ -4,7 +4,12 @@ defaults: vlm_grpo-nemotron-omni-30ba3b-osworld-1n8g-megatron.v1.yaml
 # OSWorld all-turn GRPO pipeline can learn. Do not report this as benchmark
 # performance.
 policy:
+  generation_batch_size: ${oc.decode:${oc.env:OSWORLD_GENERATION_BATCH_SIZE,32}}
   megatron_cfg:
+    optimizer:
+      # Keep 2e-7 as the control while allowing a clean higher-LR overfit arm.
+      lr: ${oc.decode:${oc.env:OSWORLD_LEARNING_RATE,2e-7}}
+      min_lr: ${oc.decode:${oc.env:OSWORLD_LEARNING_RATE,2e-7}}
     scheduler:
       # Twenty updates are too short for the inherited 50-step warmup. Reach the
       # unchanged 2e-7 target LR after two optimizer steps.
@@ -22,4 +27,4 @@ checkpointing:
   keep_top_k: 1
 
 cluster:
-  num_nodes: 4
+  num_nodes: ${oc.decode:${oc.env:NUM_NODES,4}}

@@ -76,6 +76,7 @@ class NemoGymConfig(TypedDict):
     processor: NotRequired[Any]
     independent_turn_sampling: NotRequired[str]
     independent_turn_training: NotRequired[str]
+    monotonic_segment_training: NotRequired[bool]
     # Port range for Gym HTTP servers (head server + subprocess servers).
     # Defaults to DEFAULT_GYM_PORT_RANGE_LOW/HIGH (5000-5999) from
     # nemo_rl.distributed.virtual_cluster.  See the port layout there.
@@ -490,20 +491,28 @@ Output prompt token IDs: {output_item_dict["prompt_token_ids"]}
                 input_messages, tokenize=True
             )
             # Fast tokenizers may return tokenizers.Encoding rather than a
-            # plain list. Normalize it before constructing a tensor.
-            if hasattr(prompt_token_ids, "ids"):
+            # plain list. Some wrappers also nest Encoding in a one-item list.
+            # Normalize recursively before constructing a tensor.
+            while hasattr(prompt_token_ids, "ids"):
                 prompt_token_ids = prompt_token_ids.ids
+            if (
+                isinstance(prompt_token_ids, (list, tuple))
+                and len(prompt_token_ids) == 1
+                and hasattr(prompt_token_ids[0], "ids")
+            ):
+                prompt_token_ids = prompt_token_ids[0].ids
+            prompt_token_ids = list(prompt_token_ids)
             instance_config = nemo_gym_result.get("instance_config") or {}
-            is_masked_infra_failure = bool(instance_config.get("mask_sample")) or str(
-                nemo_gym_result.get("verify_error", "")
-            ).startswith("rollout_infra_failure")
+            is_masked_infra_failure = bool(instance_config.get("mask_sample")) or bool(
+                str(nemo_gym_result.get("verify_error") or "")
+            )
             if is_masked_infra_failure:
                 # Preserve group identity without synthesizing assistant tokens.
                 # Downstream masking makes this prompt-only sample loss-free.
                 prompt_message = {
                     "role": "user",
                     "content": "",
-                    "token_ids": torch.as_tensor(prompt_token_ids),
+                    "token_ids": torch.tensor(prompt_token_ids, dtype=torch.long),
                 }
                 return {
                     "message_log": [prompt_message],
@@ -654,23 +663,99 @@ Output prompt token IDs: {output_item_dict["prompt_token_ids"]}
             output_item_dict["prompt_str"] = prompt_str
             output_item_dict["generation_str"] = generation_str
 
+        training_unit_kind = "turn"
+        turn_to_training_unit: list[int] = []
+        training_unit_turn_counts: list[int] = []
         turn_message_logs = []
-        turn_indices = range(len(turns)) if training_mode == "all" else [selected_idx]
-        for turn_idx in turn_indices:
-            message_log = turns[turn_idx][0]
-            message_log[0].update(
-                self._process_dynamic_multimodal_inputs(
-                    processor,
-                    turns[turn_idx][3],
+        if self.cfg.get("monotonic_segment_training", False):
+            if training_mode != "all":
+                raise ValueError(
+                    "monotonic_segment_training requires "
+                    "independent_turn_training='all'."
                 )
-            )
-            turn_message_logs.append(message_log)
+            training_unit_kind = "segment"
+            current_message_log: list[dict[str, Any]] | None = None
+            current_context_ids: list[int] = []
+            current_images: list[str] = []
+            current_multimodal_inputs: dict[str, Any] | None = None
+            current_turn_count = 0
 
-        selected_message_log = (
-            turn_message_logs[selected_idx]
-            if training_mode == "all"
-            else turn_message_logs[0]
+            def finalize_segment() -> None:
+                nonlocal current_message_log
+                if current_message_log is None or current_multimodal_inputs is None:
+                    return
+                current_message_log[0].update(
+                    self._process_dynamic_multimodal_inputs(
+                        processor,
+                        current_multimodal_inputs,
+                    )
+                )
+                turn_message_logs.append(current_message_log)
+                training_unit_turn_counts.append(current_turn_count)
+                current_message_log = None
+
+            for message_log, prompt_ids, generation_ids, multimodal_inputs in turns:
+                images = list(multimodal_inputs.get("images_base64") or [])
+                token_prefix_matches = (
+                    current_message_log is not None
+                    and len(prompt_ids) >= len(current_context_ids)
+                    and prompt_ids[: len(current_context_ids)] == current_context_ids
+                )
+                image_prefix_matches = (
+                    len(images) >= len(current_images)
+                    and images[: len(current_images)] == current_images
+                )
+                extends_current_segment = (
+                    token_prefix_matches and image_prefix_matches
+                )
+
+                if not extends_current_segment:
+                    finalize_segment()
+                    current_message_log = message_log
+                    current_turn_count = 1
+                else:
+                    delta_start = len(current_context_ids)
+                    full_user_message = message_log[0]
+                    delta_user_message: dict[str, Any] = {
+                        "role": "user",
+                        "content": "",
+                        "token_ids": torch.tensor(prompt_ids[delta_start:]),
+                    }
+                    if "routed_experts" in full_user_message:
+                        delta_user_message["routed_experts"] = full_user_message[
+                            "routed_experts"
+                        ][delta_start:]
+                    current_message_log.extend(
+                        [delta_user_message, message_log[1]]
+                    )
+                    current_turn_count += 1
+
+                turn_to_training_unit.append(len(turn_message_logs))
+                current_context_ids = prompt_ids + generation_ids
+                current_images = images
+                current_multimodal_inputs = multimodal_inputs
+
+            finalize_segment()
+        else:
+            turn_indices = (
+                range(len(turns)) if training_mode == "all" else [selected_idx]
+            )
+            for unit_idx, turn_idx in enumerate(turn_indices):
+                message_log = turns[turn_idx][0]
+                message_log[0].update(
+                    self._process_dynamic_multimodal_inputs(
+                        processor,
+                        turns[turn_idx][3],
+                    )
+                )
+                turn_message_logs.append(message_log)
+                turn_to_training_unit.append(unit_idx)
+                training_unit_turn_counts.append(1)
+
+        selected_training_unit_idx = (
+            turn_to_training_unit[selected_idx] if training_mode == "all" else 0
         )
+        selected_message_log = turn_message_logs[selected_training_unit_idx]
         grouping_user_message = {
             "role": "user",
             "content": "",
@@ -685,6 +770,9 @@ Output prompt token IDs: {output_item_dict["prompt_token_ids"]}
             "independent_turn_message_logs": turn_message_logs,
             "selected_turn_index": selected_idx,
             "trajectory_turn_count": len(turns),
+            "training_unit_kind": training_unit_kind,
+            "trajectory_training_unit_count": len(turn_message_logs),
+            "training_unit_turn_counts": training_unit_turn_counts,
         }
 
     @staticmethod

@@ -103,7 +103,7 @@ class TestExtractMaskSampleFlags:
             mask_sample, torch.tensor([True, False, False, False, False])
         )
 
-    def test_masks_rollout_infrastructure_failures(self):
+    def test_masks_all_osworld_verify_errors(self):
         results = [
             {
                 "full_result": {
@@ -114,14 +114,15 @@ class TestExtractMaskSampleFlags:
             {
                 "full_result": {
                     "reward": 0.0,
-                    "verify_error": "task_evaluator_returned_zero",
+                    "verify_error": "task_setup_failed:guest timeout",
                 }
             },
+            {"full_result": {"reward": 0.0, "verify_error": None}},
         ]
 
         assert torch.equal(
             _extract_mask_sample_flags(results),
-            torch.tensor([True, False]),
+            torch.tensor([True, True, False]),
         )
 
 

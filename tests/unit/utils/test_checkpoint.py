@@ -295,6 +295,19 @@ def test_get_latest_checkpoint_path(checkpoint_manager, checkpoint_dir):
     assert Path(latest_path).name == f"step_{max(steps)}"
 
 
+def test_get_latest_checkpoint_path_skips_incomplete_checkpoint(
+    checkpoint_manager, checkpoint_dir
+):
+    tmp_dir = checkpoint_manager.init_tmp_checkpoint(20, {"loss": 0.5})
+    checkpoint_manager.finalize_checkpoint(tmp_dir)
+    (checkpoint_dir / "step_22").mkdir()
+
+    with pytest.warns(UserWarning, match="Ignoring incomplete checkpoint"):
+        latest_path = checkpoint_manager.get_latest_checkpoint_path()
+
+    assert Path(latest_path).name == "step_20"
+
+
 def test_get_latest_checkpoint_path_with_suffixes(checkpoint_manager, checkpoint_dir):
     """Test that having step_*-hf dirs alongside step_* checkpoints doesn't crash."""
     # Create a checkpoint

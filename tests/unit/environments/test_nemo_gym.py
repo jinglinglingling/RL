@@ -353,6 +353,102 @@ def test_nemo_gym_postprocess_expands_all_exact_compacted_multimodal_turns():
     assert "multimodal_inputs" not in nemo_gym_result["response"]["output"][1]
 
 
+def test_nemo_gym_postprocess_builds_exact_monotonic_segments():
+    class _Tokenizer:
+        model_input_names = ["input_ids"]
+
+        def batch_decode(self, batch):
+            return [" ".join(map(str, token_ids)) for token_ids in batch]
+
+    class _Processor:
+        image_token = "<image>"
+        model_input_names = ["input_ids", "pixel_values", "imgs_sizes"]
+        tokenizer = _Tokenizer()
+
+        def __call__(self, *, text, images, return_tensors):
+            assert text == "\n".join(["<image>"] * len(images))
+            assert return_tensors == "pt"
+            return {
+                "input_ids": torch.tensor([[1]]),
+                "pixel_values": torch.ones(len(images), 3, 2, 2),
+                "imgs_sizes": torch.tensor([[2, 2]] * len(images)),
+            }
+
+    def _image(color):
+        image_buffer = BytesIO()
+        Image.new("RGB", (2, 2), color=color).save(image_buffer, format="PNG")
+        return base64.b64encode(image_buffer.getvalue()).decode()
+
+    image_1 = _image("white")
+    image_2 = _image("black")
+    nemo_gym_result = {
+        "response": {
+            "output": [
+                {
+                    "type": "message",
+                    "content": [{"type": "output_text", "text": "first"}],
+                    "prompt_token_ids": [1, 10],
+                    "generation_token_ids": [11],
+                    "generation_log_probs": [-0.1],
+                    "multimodal_inputs": {"images_base64": [image_1]},
+                },
+                {
+                    "type": "message",
+                    "content": [{"type": "output_text", "text": "second"}],
+                    "prompt_token_ids": [1, 10, 11, 20],
+                    "generation_token_ids": [22],
+                    "generation_log_probs": [-0.2],
+                    "multimodal_inputs": {"images_base64": [image_1, image_2]},
+                },
+                {
+                    "type": "message",
+                    "content": [{"type": "output_text", "text": "rewritten"}],
+                    "prompt_token_ids": [1, 30],
+                    "generation_token_ids": [31],
+                    "generation_log_probs": [-0.3],
+                    "multimodal_inputs": {"images_base64": [image_2]},
+                },
+            ]
+        },
+        "responses_create_params": {"input": []},
+    }
+    modified_class = NemoGym.__ray_metadata__.modified_class
+    env = modified_class(
+        {
+            "model_name": "test",
+            "base_urls": [],
+            "initial_global_config_dict": {},
+            "independent_turn_sampling": "first",
+            "independent_turn_training": "all",
+            "monotonic_segment_training": True,
+        }
+    )
+
+    result = env._postprocess_nemo_gym_to_nemo_rl_result(
+        nemo_gym_result,
+        _Tokenizer(),
+        processor=_Processor(),
+    )
+
+    assert result["training_unit_kind"] == "segment"
+    assert result["trajectory_turn_count"] == 3
+    assert result["trajectory_training_unit_count"] == 2
+    assert result["training_unit_turn_counts"] == [2, 1]
+    segments = result["independent_turn_message_logs"]
+    assert [message["token_ids"].tolist() for message in segments[0]] == [
+        [1, 10],
+        [11],
+        [20],
+        [22],
+    ]
+    assert [message["token_ids"].tolist() for message in segments[1]] == [
+        [1, 30],
+        [31],
+    ]
+    assert segments[0][0]["pixel_values"].as_tensor().shape == (2, 3, 2, 2)
+    assert segments[1][0]["pixel_values"].as_tensor().shape == (1, 3, 2, 2)
+
+
 @pytest.mark.nemo_gym
 def test_nemo_gym_sanity(
     nemo_gym,

@@ -93,9 +93,9 @@ def _extract_mask_sample_flags(results: list[dict[str, Any]]) -> torch.Tensor:
                 (result["full_result"].get("instance_config") or {}).get(
                     "mask_sample", False
                 )
-                or str(result["full_result"].get("verify_error", "")).startswith(
-                    "rollout_infra_failure"
-                )
+                # OSWorld reserves verify_error for evaluator/setup/session
+                # infrastructure artifacts, never judged task failure.
+                or bool(str(result["full_result"].get("verify_error") or ""))
             )
             for result in results
         ],

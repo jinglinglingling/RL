@@ -31,15 +31,20 @@ policy:
   train_global_batch_size: ${oc.env:OSWORLD_TRAIN_GLOBAL_BATCH_SIZE,128}
   train_micro_batch_size: 1
   logprob_batch_size: 1
-  # Replay the vLLM-selected experts in Megatron. Nemotron Nano is an MoE model;
-  # without R3, routing differences violate rollout/train forward consistency.
+  # This Omni VLM owns packing and context-parallel sharding inside the model
+  # (delegate_pack_to_model=True). NeMo-RL cannot yet align vLLM expert routes
+  # to that internal token layout, so router replay must remain disabled.
   router_replay:
-    enabled: true
-  # Use a 16K training context so the agent can retain two recent screenshots.
-  # The processor-expanded media sequence and response are capped together by
-  # cap_max_tokens_to_context in the inherited recipe.
+    enabled: false
+  # Keep a conservative 16K base default; the overfit launcher uses 32K for
+  # richer history. Processor-expanded media and response tokens share this cap.
   max_total_sequence_length: ${oc.decode:${oc.env:OSWORLD_MAX_MODEL_LEN,16384}}
+  # CP>1 with TP8+sequence-parallel requires 2*CP*TP divisibility.
+  make_sequence_length_divisible_by: ${oc.decode:${oc.env:OSWORLD_SEQUENCE_LENGTH_DIVISOR,8}}
   megatron_cfg:
+    # 32K experiments use CP2 to shard activation memory across two TP8
+    # replicas; the 16K control remains CP1.
+    context_parallel_size: ${oc.decode:${oc.env:OSWORLD_CONTEXT_PARALLEL_SIZE,1}}
     env_vars:
       # The colocated policy reaches the allocator limit while Adam states are
       # initialized on 80 GB GPUs. Expandable segments reduce fragmentation.
@@ -76,7 +81,7 @@ policy:
         chat_template_content_format: string
     vllm_kwargs:
       limit_mm_per_prompt:
-        image: 3
+        image: ${oc.decode:${oc.env:OSWORLD_MAX_IMAGE_HISTORY_LENGTH,2}}
       mamba_ssm_cache_dtype: float32
 
 data:
@@ -114,6 +119,9 @@ env:
     # grouping and dynamic sampling have computed reward statistics.
     independent_turn_training: all
     independent_turn_sampling: first
+    # Opt-in Molt-style packing: merge only turns whose exact token and image
+    # prefixes extend monotonically; any compaction/rewrite starts a new segment.
+    monotonic_segment_training: ${oc.decode:${oc.env:OSWORLD_MONOTONIC_SEGMENTS,false}}
     config_paths:
     - responses_api_models/vllm_model/configs/vllm_model_for_training.yaml
     - responses_api_agents/nemotron_osworld/configs/nemotron_osworld.yaml
@@ -133,9 +141,10 @@ env:
           temperature: 1.0
           top_p: 1.0
           max_parallel_rollouts: ${oc.decode:${oc.env:OSWORLD_MAX_PARALLEL_ROLLOUTS,4}}
-          # Retain the current and immediately preceding screenshots. The 16K
-          # model limit leaves room for both images plus compacted text history.
+          # The base recipe keeps two screenshots; the overfit launcher uses the
+          # reference agent's three-image window with a larger context.
           max_image_history_length: ${oc.decode:${oc.env:OSWORLD_MAX_IMAGE_HISTORY_LENGTH,2}}
+          history_mode: ${oc.env:OSWORLD_HISTORY_MODE,reference}
 
 logger:
   log_dir: logs/osworld-grpo

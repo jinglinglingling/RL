@@ -22,6 +22,7 @@
       "examples/configs/recipes/vlm",
       "nemo_rl/algorithms",
       "nemo_rl/environments",
+      "nemo_rl/utils/checkpoint.py",
       "nemo_rl/utils/venvs.py",
       "3rdparty/Gym-workspace/Gym/nemo_gym",
       "3rdparty/Gym-workspace/Gym/resources_servers/osworld"

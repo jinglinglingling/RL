@@ -580,6 +580,9 @@ def setup(
         independent_turn_training = nemo_gym_dict.pop(
             "independent_turn_training", "sample"
         )
+        monotonic_segment_training = nemo_gym_dict.pop(
+            "monotonic_segment_training", False
+        )
         # Pass prebuilt cache + venv dirs through the global config so the gym reuses
         # image-baked venvs instead of rebuilding them.
         uv_cache_dir = get_nemo_gym_uv_cache_dir()
@@ -597,6 +600,7 @@ def setup(
             processor=processor,
             independent_turn_sampling=independent_turn_sampling,
             independent_turn_training=independent_turn_training,
+            monotonic_segment_training=monotonic_segment_training,
             initial_global_config_dict=nemo_gym_dict,
         )
         nemo_gym_opts = {}

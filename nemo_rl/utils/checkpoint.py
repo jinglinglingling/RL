@@ -541,7 +541,9 @@ class CheckpointManager:
     def get_latest_checkpoint_path(self) -> Optional[str]:
         """Get the path to the latest checkpoint.
 
-        Returns the path to the checkpoint with the highest step number.
+        Returns the complete checkpoint with the highest step number. A stale
+        or externally interrupted ``step_N`` directory without readable
+        training metadata is ignored so resume can fall back safely.
 
         Returns:
             Optional[str]: Path to the latest checkpoint, or None if no checkpoints exist.
@@ -552,10 +554,20 @@ class CheckpointManager:
             for x in glob.glob(str(self.checkpoint_dir / "step_*"))
             if re.fullmatch(r"step_\d+", Path(x).name)
         ]
-        step_dirs.sort(key=lambda x: int(Path(x).name.split("_")[1]))
-        if len(step_dirs) == 0:
-            return None
-        return str(step_dirs[-1])
+        step_dirs.sort(key=lambda x: int(Path(x).name.split("_")[1]), reverse=True)
+        for step_dir in step_dirs:
+            info_file = Path(step_dir) / "training_info.json"
+            try:
+                with open(info_file) as f:
+                    json.load(f)
+            except (OSError, json.JSONDecodeError) as error:
+                warnings.warn(
+                    f"Ignoring incomplete checkpoint {step_dir}: {error}",
+                    stacklevel=2,
+                )
+                continue
+            return str(step_dir)
+        return None
 
     def load_training_info(
         self, checkpoint_path: Optional[PathLike] = None
