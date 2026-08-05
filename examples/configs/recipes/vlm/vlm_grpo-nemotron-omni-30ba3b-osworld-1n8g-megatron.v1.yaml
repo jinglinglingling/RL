@@ -21,9 +21,18 @@ grpo:
   # Use canonical GRPO group-mean advantages. The inherited math recipe enables
   # an RLOO-style baseline, which weakens sparse singleton-success signals.
   use_leave_one_out_baseline: false
+  # CUA-Gym reports mean-centered (non-std-normalized) GSPO. Keep canonical
+  # normalization by default and expose an isolated ablation.
+  normalize_rewards: ${oc.decode:${oc.env:OSWORLD_NORMALIZE_REWARDS,true}}
   batch_multiplier: 1
   async_grpo:
     enabled: false
+
+loss_fn:
+  # Sequence-level ratios + sequence-level loss select NeMo-RL's GSPO path.
+  # Defaults preserve the canonical token-level GRPO control.
+  sequence_level_importance_ratios: ${oc.decode:${oc.env:OSWORLD_SEQUENCE_LEVEL_IMPORTANCE_RATIOS,false}}
+  token_level_loss: ${oc.decode:${oc.env:OSWORLD_TOKEN_LEVEL_LOSS,true}}
 
 policy:
   # Size this as prompts * trajectories/prompt * max OSWorld turns. All-turn
