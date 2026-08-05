@@ -117,8 +117,8 @@ env:
     # OSWorld compacts image history, so each exact prompt/action pair is an
     # independent sequence. Expand every turn only after trajectory-level GRPO
     # grouping and dynamic sampling have computed reward statistics.
-    independent_turn_training: all
-    independent_turn_sampling: first
+    independent_turn_training: ${oc.env:OSWORLD_INDEPENDENT_TURN_TRAINING,all}
+    independent_turn_sampling: ${oc.env:OSWORLD_INDEPENDENT_TURN_SAMPLING,first}
     # Opt-in Molt-style packing: merge only turns whose exact token and image
     # prefixes extend monotonically; any compaction/rewrite starts a new segment.
     monotonic_segment_training: ${oc.decode:${oc.env:OSWORLD_MONOTONIC_SEGMENTS,false}}
