@@ -6,19 +6,24 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd -P)"
 
 : "${OPENSANDBOX_DOMAIN:?Set the cell-2 OpenSandbox host}"
 : "${OPENSANDBOX_API_KEY:?Set the cell-2 OpenSandbox API key}"
-: "${EVAL_CHECKPOINT_PATH:?Set the policy weights directory containing iter_*}"
 : "${OSWORLD_GRPO_VAL_DATA:?Set an absolute held-out OSWorld JSONL path}"
 
 if [[ ! -f "${OSWORLD_GRPO_VAL_DATA}" ]]; then
   echo "Held-out data not found: ${OSWORLD_GRPO_VAL_DATA}" >&2
   exit 2
 fi
-if [[ ! -d "${EVAL_CHECKPOINT_PATH}" ]]; then
+EVAL_CHECKPOINT_PATH="${EVAL_CHECKPOINT_PATH:-}"
+if [[ -n "${EVAL_CHECKPOINT_PATH}" && ! -d "${EVAL_CHECKPOINT_PATH}" ]]; then
   echo "Checkpoint weights directory not found: ${EVAL_CHECKPOINT_PATH}" >&2
   exit 2
 fi
 
-EVAL_NAME="${EVAL_NAME:-$(basename "$(dirname "$(dirname "${EVAL_CHECKPOINT_PATH}")")")}"
+if [[ -n "${EVAL_CHECKPOINT_PATH}" ]]; then
+  DEFAULT_EVAL_NAME="$(basename "$(dirname "$(dirname "${EVAL_CHECKPOINT_PATH}")")")"
+else
+  DEFAULT_EVAL_NAME="base"
+fi
+EVAL_NAME="${EVAL_NAME:-${DEFAULT_EVAL_NAME}}"
 RESULTS_DIR="${RESULTS_DIR:-${ROOT}/results/osworld-checkpoint-eval/${EVAL_NAME}}"
 
 OSWORLD_GRPO_TRAIN_DATA="${OSWORLD_GRPO_VAL_DATA}" \
