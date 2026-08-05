@@ -1,12 +1,12 @@
 {
   "version": 1,
   "repo_root": ".",
-  "state_dir": "results/osworld-night-watchdog",
+  "state_dir": "results/osworld-night-watchdog-canonical-grpo-20260804-v2",
   "poll_seconds": 300,
   "submission": {
-    "max_per_hour": 2,
+    "max_per_hour": 4,
     "base_backoff_seconds": 300,
-    "max_backoff_seconds": 3600,
+    "max_backoff_seconds": 900,
     "timeout_seconds": 120
   },
   "agent": {
@@ -23,7 +23,8 @@
       "nemo_rl/algorithms",
       "nemo_rl/environments",
       "nemo_rl/utils/venvs.py",
-      "3rdparty/Gym-workspace/Gym/nemo_gym"
+      "3rdparty/Gym-workspace/Gym/nemo_gym",
+      "3rdparty/Gym-workspace/Gym/resources_servers/osworld"
     ],
     "validation_commands": [
       [
@@ -53,24 +54,29 @@
   },
   "experiments": [
     {
-      "name": "tiny-t15",
-      "results_dir": "results/osworld-grpo-formal/osworld-overfit32-b8r8-20step-4n-20260803",
-      "checkpoint_status": "results/osworld-grpo-formal/osworld-overfit32-b8r8-20step-4n-20260803/checkpoints/latest_checkpoint_status.json",
+      "name": "tiny-canonical-grpo-t15",
+      "results_dir": "results/osworld-grpo-formal/osworld-overfit32-b8r8-canonical-grpo-t15-4n-20260804",
+      "checkpoint_status": "results/osworld-grpo-formal/osworld-overfit32-b8r8-canonical-grpo-t15-4n-20260804/checkpoints/latest_checkpoint_status.json",
       "target_step": 20,
       "submit_script": "examples/nemo_gym/slurm/submit_osworld_overfit32_fast.sh",
       "job_name_prefixes": [
-        "osw-t15-local-",
-        "osw-t15-night-"
+        "osw-grpo15-local",
+        "osw-grpo15-night",
+        "osw-grpo15-night-"
       ],
-      "submit_job_name_prefix": "osw-t15-night-",
+      "submit_job_name_prefix": "osw-grpo15-night-",
       "submit_env": {
         "NRL_FORCE_REBUILD_VENVS": "false",
         "UV_CACHE_DIR_OVERRIDE": "",
         "WANDB_ENABLED": "true",
+        "RUN_NAME": "osworld-overfit32-b8r8-canonical-grpo-t15-4n-20260804",
+        "WANDB_RUN_NAME": "osworld-overfit32-b8r8-canonical-grpo-t15-4n-20260804",
+        "WANDB_RUN_ID": "osworld-overfit32-b8r8-canonical-grpo-t15-4n-20260804",
         "SBATCH_DEPENDENCY_TYPE": "afternotok",
         "SBATCH_ACCOUNT": "coreai_dlalgo_nemorl",
         "SBATCH_PARTITION": "batch",
-        "SBATCH_TIME": "04:00:00"
+        "SBATCH_TIME": "04:00:00",
+        "SBATCH_MEM": "1024G"
       },
       "extension": {
         "from_step": 20,
@@ -81,7 +87,7 @@
         "wandb": {
           "entity": "nvidia",
           "project": "osworld-grpo",
-          "run_id": "osworld-overfit32-b8r8-20step-4n-20260803",
+          "run_id": "osworld-overfit32-b8r8-canonical-grpo-t15-4n-20260804",
           "timeout_seconds": 30,
           "thresholds": {
             "validation/accuracy": {
@@ -98,24 +104,29 @@
       }
     },
     {
-      "name": "tiny-t30",
-      "results_dir": "results/osworld-grpo-formal/osworld-overfit32-b8r8-20step-t30-4n-20260803",
-      "checkpoint_status": "results/osworld-grpo-formal/osworld-overfit32-b8r8-20step-t30-4n-20260803/checkpoints/latest_checkpoint_status.json",
+      "name": "tiny-canonical-grpo-t30",
+      "results_dir": "results/osworld-grpo-formal/osworld-overfit32-b8r8-canonical-grpo-t30-4n-20260804",
+      "checkpoint_status": "results/osworld-grpo-formal/osworld-overfit32-b8r8-canonical-grpo-t30-4n-20260804/checkpoints/latest_checkpoint_status.json",
       "target_step": 20,
       "submit_script": "examples/nemo_gym/slurm/submit_osworld_overfit32_maxturn30.sh",
       "job_name_prefixes": [
-        "osw-t30-local-",
-        "osw-t30-night-"
+        "osw-grpo30-local",
+        "osw-grpo30-night",
+        "osw-grpo30-night-"
       ],
-      "submit_job_name_prefix": "osw-t30-night-",
+      "submit_job_name_prefix": "osw-grpo30-night-",
       "submit_env": {
         "NRL_FORCE_REBUILD_VENVS": "false",
         "UV_CACHE_DIR_OVERRIDE": "",
         "WANDB_ENABLED": "true",
+        "RUN_NAME": "osworld-overfit32-b8r8-canonical-grpo-t30-4n-20260804",
+        "WANDB_RUN_NAME": "osworld-overfit32-b8r8-canonical-grpo-t30-4n-20260804",
+        "WANDB_RUN_ID": "osworld-overfit32-b8r8-canonical-grpo-t30-4n-20260804",
         "SBATCH_DEPENDENCY_TYPE": "afternotok",
         "SBATCH_ACCOUNT": "coreai_dlalgo_nemorl",
         "SBATCH_PARTITION": "batch",
-        "SBATCH_TIME": "04:00:00"
+        "SBATCH_TIME": "04:00:00",
+        "SBATCH_MEM": "1536G"
       },
       "extension": {
         "from_step": 20,
@@ -126,7 +137,7 @@
         "wandb": {
           "entity": "nvidia",
           "project": "osworld-grpo",
-          "run_id": "osworld-overfit32-b8r8-20step-t30-4n-20260803",
+          "run_id": "osworld-overfit32-b8r8-canonical-grpo-t30-4n-20260804",
           "timeout_seconds": 30,
           "thresholds": {
             "validation/accuracy": {

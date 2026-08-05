@@ -18,6 +18,9 @@ grpo:
   # and avoids unsafe replay of trajectories sampled by stale policies.
   use_dynamic_sampling: ${oc.env:OSWORLD_USE_DYNAMIC_SAMPLING,true}
   dynamic_sampling_max_gen_batches: ${oc.env:OSWORLD_DYNAMIC_SAMPLING_MAX_GEN_BATCHES,16}
+  # Use canonical GRPO group-mean advantages. The inherited math recipe enables
+  # an RLOO-style baseline, which weakens sparse singleton-success signals.
+  use_leave_one_out_baseline: false
   batch_multiplier: 1
   async_grpo:
     enabled: false
@@ -28,6 +31,10 @@ policy:
   train_global_batch_size: ${oc.env:OSWORLD_TRAIN_GLOBAL_BATCH_SIZE,128}
   train_micro_batch_size: 1
   logprob_batch_size: 1
+  # Replay the vLLM-selected experts in Megatron. Nemotron Nano is an MoE model;
+  # without R3, routing differences violate rollout/train forward consistency.
+  router_replay:
+    enabled: true
   # Use a 16K training context so the agent can retain two recent screenshots.
   # The processor-expanded media sequence and response are capped together by
   # cap_max_tokens_to_context in the inherited recipe.
@@ -51,7 +58,9 @@ policy:
     # training endpoint rejects mismatches because they make rollouts off-policy.
     # Match ARPO/DART's exploration setting during OSWorld training.
     temperature: 1.0
-    top_p: 0.95
+    # Full-support sampling keeps vLLM rollout logprobs consistent with
+    # Megatron's old-logprob recomputation.
+    top_p: 1.0
     max_new_tokens: 4096
     stop_token_ids: null
     stop_strings: null
@@ -122,6 +131,7 @@ env:
           # Must exactly match policy.generation.temperature; the training
           # endpoint rejects off-policy request parameters.
           temperature: 1.0
+          top_p: 1.0
           max_parallel_rollouts: ${oc.decode:${oc.env:OSWORLD_MAX_PARALLEL_ROLLOUTS,4}}
           # Retain the current and immediately preceding screenshots. The 16K
           # model limit leaves room for both images plus compacted text history.

@@ -241,11 +241,25 @@ def _seed_meta(client: NoOpDataPlaneClient, prefix: str, n: int) -> KVBatchMeta:
     )
 
 
-def _stamp_filter_tags(meta: KVBatchMeta, stds: list[float]) -> KVBatchMeta:
+def _stamp_filter_tags(
+    meta: KVBatchMeta,
+    stds: list[float],
+    filter_stds: list[float] | None = None,
+) -> KVBatchMeta:
     """Mirror the driver's post-baseline/std step: stamp ``std`` into
     ``meta.tags`` so ``_apply_dynamic_sampling`` can read the filter
     criterion from the meta alone."""
-    meta.tags = [{"std": float(s)} for s in stds]
+    meta.tags = [
+        {
+            "std": float(std),
+            **(
+                {"filter_std": float(filter_stds[i])}
+                if filter_stds is not None
+                else {}
+            ),
+        }
+        for i, std in enumerate(stds)
+    ]
     return meta
 
 
@@ -294,6 +308,35 @@ def test_apply_dynamic_sampling_filters_zero_std():
         select_fields=["input_ids"],
     )
     assert survivors["input_ids"].shape == (2, 8)
+
+
+def test_apply_dynamic_sampling_uses_group_filter_std():
+    """Full-group variance takes precedence over per-rollout LOO std."""
+    from nemo_rl.algorithms.grpo_sync import _apply_dynamic_sampling
+
+    client = NoOpDataPlaneClient()
+    meta = _seed_meta(client, "u", n=4)
+    _stamp_filter_tags(
+        meta,
+        stds=[0.0, 0.5, 0.5, 0.5],
+        filter_stds=[0.5, 0.5, 0.5, 0.5],
+    )
+    sd = _make_driver_carry([1.0, 0.0, 0.0, 0.0], [0.0, 0.5, 0.5, 0.5])
+
+    pm, _, _, complete, _, _ = _apply_dynamic_sampling(
+        meta=meta,
+        driver_carry=sd,
+        pending_meta=None,
+        pending_carry=None,
+        pending_unfiltered_rewards=[],
+        train_prompts_size=4,
+        num_gen_batches=1,
+        max_gen_batches=10,
+        policy=_fake_policy(client),
+    )
+
+    assert complete is True
+    assert pm is not None and len(pm.sample_ids) == 4
 
 
 def test_apply_dynamic_sampling_completes_when_train_size_reached():

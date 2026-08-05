@@ -227,6 +227,39 @@ def test_nemo_gym_postprocess_uses_batch_decode():
     assert nemo_gym_result["response"]["output"][1]["generation_str"] == "6 7"
 
 
+def test_nemo_gym_postprocess_preserves_masked_empty_infra_failure():
+    class _Encoding:
+        ids = [1, 2, 3]
+
+    class _Tokenizer:
+        def apply_chat_template(self, messages, tokenize):
+            assert messages == [{"role": "user", "content": "task"}]
+            assert tokenize is True
+            return _Encoding()
+
+    nemo_gym_result = {
+        "response": {"output": []},
+        "responses_create_params": {
+            "input": [{"role": "user", "content": "task"}]
+        },
+        "instance_config": {"mask_sample": True},
+        "verify_error": "rollout_infra_failure:screenshot",
+    }
+
+    class _MockSelf:
+        cfg = {}
+
+    result = (
+        NemoGym.__ray_metadata__.modified_class._postprocess_nemo_gym_to_nemo_rl_result(
+            _MockSelf(), nemo_gym_result, _Tokenizer()
+        )
+    )
+
+    assert len(result["message_log"]) == 1
+    assert result["message_log"][0]["token_ids"].tolist() == [1, 2, 3]
+    assert result["input_message_log"] == result["message_log"]
+
+
 def test_nemo_gym_postprocess_expands_all_exact_compacted_multimodal_turns():
     class _Tokenizer:
         model_input_names = ["input_ids"]

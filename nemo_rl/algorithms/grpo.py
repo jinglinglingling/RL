@@ -1368,6 +1368,7 @@ def dynamic_sampling(
     master_config: MasterConfig,
     timer: Timer,
     batch_cache: BatchedDataDict[DatumSpec] = None,
+    filter_std: torch.Tensor | None = None,
 ) -> BatchedDataDict[DatumSpec]:
     """Implements the dynamic sampling algorithm to select prompts with non-zero standard deviation.
 
@@ -1383,11 +1384,14 @@ def dynamic_sampling(
 
     Args:
         repeated_batch (BatchedDataDict[DatumSpec]): The current batch of data containing prompts, responses, rewards, baselines, and std.
-        std (torch.Tensor): Tensor representing the standard deviation for each prompt group.
+        std (torch.Tensor): Tensor used for advantage normalization.
         baseline (torch.Tensor): Baseline values for each prompt group.
         dynamic_sampling_num_gen_batches (int): Number of generation batches processed at the current step.
         master_config (MasterConfig): Configuration containing GRPO and policy settings.
         batch_cache (BatchedDataDict[DatumSpec], optional): Cache storing previously selected prompts with non-zero std.
+        filter_std (torch.Tensor, optional): Full-group reward standard deviation
+            used only for dynamic-sampling eligibility. This remains group-level
+            even when ``std`` uses leave-one-out semantics.
 
     Returns:
         tuple: A tuple containing:
@@ -1415,7 +1419,8 @@ def dynamic_sampling(
     if master_config.grpo["use_dynamic_sampling"]:
         with timer.time("dynamic_sampling"):
             # Get the prompt indices with non-zero std
-            non_zero_std_mask = std != 0.0
+            sampling_std = filter_std if filter_std is not None else std
+            non_zero_std_mask = sampling_std != 0.0
 
             keep_prompt_indices = torch.arange(
                 len(non_zero_std_mask), device=std.device
@@ -2744,8 +2749,23 @@ def grpo_train(
                                 else None
                             ),
                         )
+                        if master_config.grpo["use_leave_one_out_baseline"]:
+                            _, filter_std = calculate_baseline_and_std_per_prompt(
+                                input_ids.cuda(device_id),
+                                rewards.cuda(device_id),
+                                advantage_valid_mask.cuda(device_id),
+                                leave_one_out_baseline=False,
+                                std_rewards=(
+                                    std_rewards.cuda(device_id)
+                                    if std_rewards is not None
+                                    else None
+                                ),
+                            )
+                        else:
+                            filter_std = std
                         baseline = baseline.cpu()
                         std = std.cpu()
+                        filter_std = filter_std.cpu()
                     else:
                         baseline, std = calculate_baseline_and_std_per_prompt(
                             input_ids,
@@ -2756,6 +2776,16 @@ def grpo_train(
                             ],
                             std_rewards=std_rewards,
                         )
+                        if master_config.grpo["use_leave_one_out_baseline"]:
+                            _, filter_std = calculate_baseline_and_std_per_prompt(
+                                input_ids,
+                                rewards,
+                                advantage_valid_mask,
+                                leave_one_out_baseline=False,
+                                std_rewards=std_rewards,
+                            )
+                        else:
+                            filter_std = std
 
                     # Apply dynamic sampling to filter prompts with non-zero std (DAPO algorithm)
                     repeated_batch, is_batch_complete, batch_cache, ds_metrics = (
@@ -2767,6 +2797,7 @@ def grpo_train(
                             master_config,
                             timer,
                             batch_cache,
+                            filter_std=filter_std,
                         )
                     )
                     if ds_metrics:
@@ -3643,10 +3674,13 @@ def validate(
             sum(total_lengths) / len(total_lengths) if len(total_lengths) > 0 else 0.0
         )
 
+        # Per-batch environment metrics may also contain ``accuracy``. Put the
+        # global reductions last so the final validation batch cannot overwrite
+        # the full validation-set result.
         val_metrics = {
+            **additional_metrics_to_report,
             "accuracy": accuracy,
             "avg_length": avg_length,
-            **additional_metrics_to_report,
         }
 
         # Print sample conversations only once at the end of validation

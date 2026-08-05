@@ -43,6 +43,7 @@ TRANSIENT_PATTERNS = (
     r"container start failed",
     r"NODE_FAIL",
     r"PREEMPTED",
+    r"\bTIMEOUT\b",
     r"DUE TO TIME LIMIT",
     r"CANCELLED AT",
     r"Connection reset by peer",
@@ -53,6 +54,7 @@ DOMINANT_TRANSIENT_PATTERNS = (
     r"Timeout \(\d+s\) when waiting for lock",
     r"Failed to download distribution due to network timeout",
     r"UV_HTTP_TIMEOUT",
+    r"ray\.exceptions\.OutOfMemoryError:.*node running low on memory",
 )
 CODE_FAILURE_PATTERNS = (
     r"ModuleNotFoundError",
@@ -63,6 +65,7 @@ CODE_FAILURE_PATTERNS = (
     r"OutOfMemoryError",
     r"torch\.hub",
     r"flashinfer_cubin",
+    r"Could not infer dtype of tokenizers\.Encoding",
     r"transport endpoint",
 )
 MAX_LOG_BYTES = 4 * 1024 * 1024
@@ -74,6 +77,7 @@ SAFE_SUBMIT_ENV_KEYS = {
     "SBATCH_ACCOUNT",
     "SBATCH_PARTITION",
     "SBATCH_TIME",
+    "SBATCH_MEM",
     "GRPO_MAX_NUM_STEPS",
     "OSWORLD_MAX_STEPS",
     "RUN_NAME",

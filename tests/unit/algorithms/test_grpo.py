@@ -1316,6 +1316,43 @@ def test_dapo_dynamic_sampling_filters_nonzero_std(mock_grpo_components):
     assert torch.allclose(result_batch["baseline"], baseline)
 
 
+def test_dynamic_sampling_uses_full_group_filter_std(mock_grpo_components):
+    """Keep complete mixed groups even if per-rollout LOO std contains zeros."""
+    batch_size = 8
+    message_logs = [
+        [
+            {"role": "user", "content": "prompt_0"},
+            {"role": "assistant", "content": f"response_{i}"},
+        ]
+        for i in range(batch_size)
+    ]
+    repeated_batch = create_mock_batch(batch_size, ["math"] * batch_size, message_logs)
+    repeated_batch["total_reward"] = torch.tensor([1.0] + [0.0] * 7)
+    loo_std = torch.tensor([0.0] + [0.3779645] * 7)
+    filter_std = torch.full((8,), 0.3535534)
+    baseline = torch.tensor([0.0] + [1.0 / 7.0] * 7)
+
+    master_config = mock_grpo_components["master_config"]
+    master_config.grpo["use_dynamic_sampling"] = True
+    master_config.grpo["num_prompts_per_step"] = 1
+    master_config.grpo["num_generations_per_prompt"] = 8
+    master_config.grpo["dynamic_sampling_max_gen_batches"] = 5
+
+    result_batch, is_batch_complete, _, _ = dynamic_sampling(
+        repeated_batch,
+        loo_std,
+        baseline,
+        dynamic_sampling_num_gen_batches=1,
+        master_config=master_config,
+        timer=Timer(),
+        filter_std=filter_std,
+    )
+
+    assert is_batch_complete is True
+    assert result_batch.size == 8
+    assert torch.equal(result_batch["filtered_reward"], repeated_batch["total_reward"])
+
+
 def test_dapo_dynamic_sampling_filters_zero_std(mock_grpo_components):
     """Test that DAPO dynamic sampling filters out prompts with zero standard deviation."""
     # Create mock batch data

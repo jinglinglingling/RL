@@ -184,6 +184,13 @@ export NRL_FORCE_REBUILD_VENVS='${NRL_FORCE_REBUILD_VENVS}' NRL_ALLOW_PARTIAL_VE
 SBATCH_ACCOUNT="${SBATCH_ACCOUNT:-coreai_dlalgo_nemorl}"
 SBATCH_PARTITION="${SBATCH_PARTITION:-batch}"
 SBATCH_TIME="${SBATCH_TIME:-04:00:00}"
+if [[ -z "${SBATCH_MEM:-}" ]]; then
+  if (( OSWORLD_MAX_STEPS >= 30 )); then
+    SBATCH_MEM="1536G"
+  else
+    SBATCH_MEM="1024G"
+  fi
+fi
 JOB_NAME="${JOB_NAME:-osworld-grpo-smoke}"
 SBATCH_DEPENDENCY="${SBATCH_DEPENDENCY:-}"
 SBATCH_DEPENDENCY_TYPE="${SBATCH_DEPENDENCY_TYPE:-afterany}"
@@ -221,6 +228,7 @@ SBATCH_ARGS=(
   --account="${SBATCH_ACCOUNT}"
   --partition="${SBATCH_PARTITION}"
   --time="${SBATCH_TIME}"
+  --mem="${SBATCH_MEM}"
   --job-name="${JOB_NAME}"
   --export=ALL
 )

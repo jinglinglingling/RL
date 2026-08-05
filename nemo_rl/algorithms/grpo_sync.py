@@ -117,7 +117,7 @@ def _raise_if_message_level_advantage_penalties_enabled(
 
 # ── DAPO non-zero-std dynamic sampling, slice-only ─────────────────────
 # Slice-only formulation of nemo_rl.algorithms.grpo.dynamic_sampling: filter
-# on std != 0, accumulate survivors across iterations, slice on overflow.
+# on full-group filter_std != 0, accumulate survivors across iterations, slice on overflow.
 # Bulk in TQ untouched except for clear_samples of dropped/discarded uids.
 
 
@@ -177,8 +177,16 @@ def _apply_dynamic_sampling(
             "_apply_dynamic_sampling: meta.tags is None — driver must "
             "stamp 'std' into meta.tags before this call."
         )
-    keep_idx = [i for i, t in enumerate(meta.tags) if t["std"] != 0.0]
-    drop_keys = [k for k, t in zip(meta.sample_ids, meta.tags) if t["std"] == 0.0]
+    keep_idx = [
+        i
+        for i, t in enumerate(meta.tags)
+        if t.get("filter_std", t["std"]) != 0.0
+    ]
+    drop_keys = [
+        k
+        for k, t in zip(meta.sample_ids, meta.tags)
+        if t.get("filter_std", t["std"]) == 0.0
+    ]
     if drop_keys:
         policy.discard_samples(drop_keys, meta.partition_id)
 
@@ -296,10 +304,12 @@ def validate_sync(
             else 0.0
         )
         avg_length = sum(total_lengths) / len(total_lengths) if total_lengths else 0.0
+        # Preserve the full validation-set reductions when the last rollout
+        # batch reports metrics with the same names.
         val_metrics = {
+            **additional_metrics,
             "accuracy": accuracy,
             "avg_length": avg_length,
-            **additional_metrics,
         }
         try:
             print_message_log_samples(
@@ -695,11 +705,21 @@ def grpo_train_sync(
                             ],
                         )
                     )
-                    # Mirror std onto meta so dynamic_sampling can filter
-                    # without fetching tensor data.
+                    if master_config.grpo["use_leave_one_out_baseline"]:
+                        _, filter_std = calculate_baseline_and_std_per_prompt(
+                            driver_carry["prompt_ids_for_adv"],
+                            driver_carry["total_reward"],
+                            torch.ones_like(driver_carry["total_reward"]),
+                            leave_one_out_baseline=False,
+                        )
+                    else:
+                        filter_std = driver_carry["std"]
+                    # Mirror both advantage-normalization std and full-group
+                    # filter std onto meta without fetching bulk tensor data.
                     meta.stamp_tags(
                         {
                             "std": driver_carry["std"].tolist(),
+                            "filter_std": filter_std.tolist(),
                             "baseline": driver_carry["baseline"].tolist(),
                         }
                     )

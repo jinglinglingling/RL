@@ -489,6 +489,27 @@ Output prompt token IDs: {output_item_dict["prompt_token_ids"]}
             prompt_token_ids = tokenizer.apply_chat_template(
                 input_messages, tokenize=True
             )
+            # Fast tokenizers may return tokenizers.Encoding rather than a
+            # plain list. Normalize it before constructing a tensor.
+            if hasattr(prompt_token_ids, "ids"):
+                prompt_token_ids = prompt_token_ids.ids
+            instance_config = nemo_gym_result.get("instance_config") or {}
+            is_masked_infra_failure = bool(instance_config.get("mask_sample")) or str(
+                nemo_gym_result.get("verify_error", "")
+            ).startswith("rollout_infra_failure")
+            if is_masked_infra_failure:
+                # Preserve group identity without synthesizing assistant tokens.
+                # Downstream masking makes this prompt-only sample loss-free.
+                prompt_message = {
+                    "role": "user",
+                    "content": "",
+                    "token_ids": torch.as_tensor(prompt_token_ids),
+                }
+                return {
+                    "message_log": [prompt_message],
+                    "input_message_log": [prompt_message],
+                    "full_result": nemo_gym_result,
+                }
             raise ValueError(
                 f"NeMo Gym returned a result with no generation data. "
                 f"This typically means the prompt for the first turn already exceeds the vLLM max_model_len, "
