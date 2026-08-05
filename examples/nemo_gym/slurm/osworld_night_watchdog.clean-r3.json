@@ -255,6 +255,53 @@
         "OSWORLD_MAX_VAL_SAMPLES": "128",
         "OSWORLD_VAL_PERIOD": "10"
       }
+    },
+    {
+      "name": "gspo-nods-std-t15-b8r8-lr2e7-4n",
+      "results_dir": "results/osworld-grpo-formal/osworld-overfit32-gspo-nods-std-t15-b8r8-lr2e7-4n-20260806",
+      "checkpoint_status": "results/osworld-grpo-formal/osworld-overfit32-gspo-nods-std-t15-b8r8-lr2e7-4n-20260806/checkpoints/latest_checkpoint_status.json",
+      "target_step": 20,
+      "submit_script": "examples/nemo_gym/slurm/submit_osworld_overfit32_fast.sh",
+      "job_name_prefixes": [
+        "osw-gspo-std-nods",
+        "osw-gspo-std-nods-"
+      ],
+      "submit_job_name_prefix": "osw-gspo-std-nods-",
+      "submit_env": {
+        "NRL_FORCE_REBUILD_VENVS": "false",
+        "UV_CACHE_DIR_OVERRIDE": "",
+        "WANDB_ENABLED": "true",
+        "RUN_NAME": "osworld-overfit32-gspo-nods-std-t15-b8r8-lr2e7-4n-20260806",
+        "WANDB_RUN_NAME": "osworld-overfit32-gspo-nods-std-t15-b8r8-lr2e7-4n-20260806",
+        "WANDB_RUN_ID": "osworld-overfit32-gspo-nods-std-t15-b8r8-lr2e7-4n-20260806",
+        "SBATCH_DEPENDENCY_TYPE": "afternotok",
+        "SBATCH_ACCOUNT": "coreai_dlalgo_nemorl",
+        "SBATCH_PARTITION": "batch",
+        "SBATCH_TIME": "04:00:00",
+        "SBATCH_MEM": "1024G",
+        "NUM_NODES": "4",
+        "GRPO_MAX_NUM_STEPS": "20",
+        "OSWORLD_NUM_PROMPTS_PER_STEP": "8",
+        "OSWORLD_NUM_GENERATIONS": "8",
+        "OSWORLD_TRAIN_GLOBAL_BATCH_SIZE": "960",
+        "OSWORLD_NEMO_GYM_NUM_WORKERS": "64",
+        "OSWORLD_MAX_PARALLEL_ROLLOUTS": "64",
+        "OSWORLD_GENERATION_BATCH_SIZE": "32",
+        "OSWORLD_LEARNING_RATE": "2e-7",
+        "OSWORLD_MAX_MODEL_LEN": "16384",
+        "OSWORLD_MAX_IMAGE_HISTORY_LENGTH": "2",
+        "OSWORLD_CONTEXT_PARALLEL_SIZE": "1",
+        "OSWORLD_INDEPENDENT_TURN_TRAINING": "all",
+        "OSWORLD_INDEPENDENT_TURN_SAMPLING": "first",
+        "OSWORLD_USE_DYNAMIC_SAMPLING": "false",
+        "OSWORLD_DYNAMIC_SAMPLING_MAX_GEN_BATCHES": "1",
+        "OSWORLD_NORMALIZE_REWARDS": "true",
+        "OSWORLD_SEQUENCE_LEVEL_IMPORTANCE_RATIOS": "true",
+        "OSWORLD_TOKEN_LEVEL_LOSS": "false",
+        "OSWORLD_VAL_BATCH_SIZE": "64",
+        "OSWORLD_MAX_VAL_SAMPLES": "128",
+        "OSWORLD_VAL_PERIOD": "10"
+      }
     }
   ]
 }
