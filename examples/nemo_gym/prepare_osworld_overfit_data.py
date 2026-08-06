@@ -21,7 +21,13 @@ LOSS_MASK_RE = re.compile(r'"sample_loss_mask"\s*:\s*\[([-+0-9.eE]+)\]')
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--train-data", type=Path, required=True)
-    parser.add_argument("--log-root", type=Path, action="append", required=True)
+    parser.add_argument("--log-root", type=Path, action="append", default=[])
+    parser.add_argument(
+        "--task-id",
+        action="append",
+        default=[],
+        help="Select an explicit task ID; repeat for a fixed acceptance set.",
+    )
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--num-tasks", type=int, default=32)
     parser.add_argument("--min-reward", type=float, default=0.125)
@@ -149,15 +155,34 @@ def write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
 def main() -> None:
     args = parse_args()
     rows_by_id, source_order = load_training_rows(args.train_data)
-    task_rewards = collect_group_rewards(args.log_root)
-    selected = select_tasks(
-        rows_by_id,
-        source_order,
-        task_rewards,
-        num_tasks=args.num_tasks,
-        min_reward=args.min_reward,
-        max_reward=args.max_reward,
-    )
+    if args.task_id:
+        missing = [task_id for task_id in args.task_id if task_id not in rows_by_id]
+        if missing:
+            raise ValueError(f"explicit task IDs not found in training data: {missing}")
+        if len(set(args.task_id)) != len(args.task_id):
+            raise ValueError("explicit task IDs must be unique")
+        selected = [
+            {
+                "task_id": task_id,
+                "snapshot": rows_by_id[task_id]["verifier_metadata"]["snapshot"],
+                "instruction": rows_by_id[task_id]["verifier_metadata"]["instruction"],
+                "selection": "explicit_fixed_acceptance_set",
+                "source_order": source_order.index(task_id),
+            }
+            for task_id in args.task_id
+        ]
+    else:
+        if not args.log_root:
+            raise ValueError("--log-root is required unless --task-id is provided")
+        task_rewards = collect_group_rewards(args.log_root)
+        selected = select_tasks(
+            rows_by_id,
+            source_order,
+            task_rewards,
+            num_tasks=args.num_tasks,
+            min_reward=args.min_reward,
+            max_reward=args.max_reward,
+        )
     selected_rows = [rows_by_id[task["task_id"]] for task in selected]
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -176,9 +201,16 @@ def main() -> None:
         "source_training_data": str(args.train_data.resolve()),
         "source_log_roots": [str(path.resolve()) for path in args.log_root],
         "criteria": {
-            "num_tasks": args.num_tasks,
-            "all_observed_groups_have_reward_variance": True,
-            "mean_group_reward_range": [args.min_reward, args.max_reward],
+            "num_tasks": len(selected),
+            "selection": (
+                "explicit_fixed_acceptance_set"
+                if args.task_id
+                else "historical_group_reward"
+            ),
+            "all_observed_groups_have_reward_variance": not args.task_id,
+            "mean_group_reward_range": (
+                None if args.task_id else [args.min_reward, args.max_reward]
+            ),
             "proxy": False,
             "possibility_of_env_change": "low",
             "exclude_evaluator_function": "infeasible",
@@ -194,10 +226,13 @@ def main() -> None:
         json.dump(manifest, output, ensure_ascii=False, indent=2)
         output.write("\n")
 
-    print(
-        f"selected {len(selected)} tasks from {len(task_rewards)} historically "
-        f"observed tasks"
-    )
+    if args.task_id:
+        print(f"selected {len(selected)} explicitly specified tasks")
+    else:
+        print(
+            f"selected {len(selected)} tasks from {len(task_rewards)} historically "
+            f"observed tasks"
+        )
     print(f"snapshots: {manifest['snapshot_counts']}")
     print(f"output: {args.output_dir.resolve()}")
 
