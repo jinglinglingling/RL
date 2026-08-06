@@ -1856,6 +1856,7 @@ def _apply_mask_sample_filter(repeated_batch: BatchedDataDict[DatumSpec]) -> int
 def _expand_all_independent_turns(
     repeated_batch: BatchedDataDict[DatumSpec],
     target_batch_size: int,
+    padding_token_id: int = 0,
 ) -> tuple[BatchedDataDict[DatumSpec], torch.Tensor | None, int]:
     """Expand compacted VLM trajectories into exact per-turn training rows.
 
@@ -1901,7 +1902,24 @@ def _expand_all_independent_turns(
     num_padding = target_batch_size - num_real_turns
     if num_padding:
         source_indices.extend([source_indices[-1]] * num_padding)
-        message_logs.extend([message_logs[-1]] * num_padding)
+        # Padding participates in model forward even though its loss weight is
+        # zero. Repeating the final multimodal message log can duplicate image
+        # placeholders without duplicating the PackedTensor media features.
+        # Use independent text-only rows so padding is always forward-safe.
+        message_logs.extend(
+            [
+                [
+                    {
+                        "role": "user",
+                        "content": "",
+                        "token_ids": torch.tensor(
+                            [padding_token_id], dtype=torch.long
+                        ),
+                    }
+                ]
+                for _ in range(num_padding)
+            ]
+        )
         turn_indices.extend([turn_indices[-1]] * num_padding)
         turn_weights.extend([0.0] * num_padding)
         trajectory_turn_counts.extend(
@@ -2866,6 +2884,11 @@ def grpo_train(
                             target_batch_size=master_config.policy[
                                 "train_global_batch_size"
                             ],
+                            padding_token_id=(
+                                getattr(tokenizer, "pad_token_id", None)
+                                or getattr(tokenizer, "eos_token_id", None)
+                                or 0
+                            ),
                         )
                     )
                     if turn_to_trajectory is not None:

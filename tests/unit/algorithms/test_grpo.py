@@ -152,8 +152,9 @@ def test_expand_all_independent_turns_preserves_trajectory_mapping_and_masks_pad
         1,
         2,
         3,
-        3,
+        0,
     ]
+    assert expanded["message_log"][3] is not expanded["message_log"][2]
     assert expanded["all_turn_padding"].tolist() == [False, False, False, True]
     assert expanded["trajectory_index"].tolist() == [0, 0, 1, 1]
     assert expanded["turn_index"].tolist() == [0, 1, 0, 0]

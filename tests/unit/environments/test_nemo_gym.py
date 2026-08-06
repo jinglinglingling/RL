@@ -205,7 +205,7 @@ def test_nemo_gym_postprocess_uses_batch_decode():
     }
 
     class _MockSelf:
-        cfg = {}
+        cfg = {"independent_turn_training": "all"}
 
     result = (
         NemoGym.__ray_metadata__.modified_class._postprocess_nemo_gym_to_nemo_rl_result(
@@ -247,7 +247,7 @@ def test_nemo_gym_postprocess_preserves_masked_empty_infra_failure():
     }
 
     class _MockSelf:
-        cfg = {}
+        cfg = {"independent_turn_training": "all"}
 
     result = (
         NemoGym.__ray_metadata__.modified_class._postprocess_nemo_gym_to_nemo_rl_result(
@@ -256,8 +256,46 @@ def test_nemo_gym_postprocess_preserves_masked_empty_infra_failure():
     )
 
     assert len(result["message_log"]) == 1
-    assert result["message_log"][0]["token_ids"].tolist() == [1, 2, 3]
-    assert result["input_message_log"] == result["message_log"]
+    assert result["message_log"][0]["token_ids"].tolist() == [0]
+    assert result["input_message_log"][0]["token_ids"].tolist() == [1, 2, 3]
+    assert result["independent_turn_sampled"] is True
+    assert result["independent_turn_training"] == "all"
+    assert result["independent_turn_message_logs"] == [result["message_log"]]
+
+
+def test_nemo_gym_postprocess_normalizes_batch_encoding_infra_failure():
+    class _BatchEncoding(dict):
+        pass
+
+    class _Tokenizer:
+        def apply_chat_template(self, messages, tokenize):
+            assert messages == [{"role": "user", "content": "task"}]
+            assert tokenize is True
+            return _BatchEncoding(
+                input_ids=torch.tensor([[1, 2, 3]]),
+                attention_mask=torch.tensor([[1, 1, 1]]),
+            )
+
+    nemo_gym_result = {
+        "response": {"output": []},
+        "responses_create_params": {
+            "input": [{"role": "user", "content": "task"}]
+        },
+        "instance_config": {"mask_sample": True},
+        "verify_error": "rollout_infra_failure:seed_session",
+    }
+
+    class _MockSelf:
+        cfg = {}
+
+    result = (
+        NemoGym.__ray_metadata__.modified_class._postprocess_nemo_gym_to_nemo_rl_result(
+            _MockSelf(), nemo_gym_result, _Tokenizer()
+        )
+    )
+
+    assert result["message_log"][0]["token_ids"].tolist() == [0]
+    assert result["input_message_log"][0]["token_ids"].tolist() == [1, 2, 3]
 
 
 def test_nemo_gym_postprocess_expands_all_exact_compacted_multimodal_turns():

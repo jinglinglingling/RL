@@ -34,6 +34,7 @@ from nemo_rl.distributed.virtual_cluster import (
     _get_node_ip_local,
 )
 from nemo_rl.environments.interfaces import EnvironmentInterface
+from nemo_rl.environments.trajectory_buffer import TrajectoryBuffer, TrajectoryTurn
 from nemo_rl.utils.timer import Timer
 
 DEFAULT_INVALID_TOOL_CALL_PATTERNS = [
@@ -490,18 +491,33 @@ Output prompt token IDs: {output_item_dict["prompt_token_ids"]}
             prompt_token_ids = tokenizer.apply_chat_template(
                 input_messages, tokenize=True
             )
-            # Fast tokenizers may return tokenizers.Encoding rather than a
-            # plain list. Some wrappers also nest Encoding in a one-item list.
-            # Normalize recursively before constructing a tensor.
+            # Depending on the tokenizer implementation this can be a
+            # BatchEncoding, tokenizers.Encoding, tensor, or nested list.
+            # Iterating a BatchEncoding produces string keys ("input_ids",
+            # "attention_mask"), which cannot be converted to a torch tensor.
+            if hasattr(prompt_token_ids, "get"):
+                input_ids = prompt_token_ids.get("input_ids")
+                if input_ids is not None:
+                    prompt_token_ids = input_ids
             while hasattr(prompt_token_ids, "ids"):
                 prompt_token_ids = prompt_token_ids.ids
-            if (
+            if torch.is_tensor(prompt_token_ids):
+                prompt_token_ids = prompt_token_ids.detach().cpu().tolist()
+            while (
                 isinstance(prompt_token_ids, (list, tuple))
                 and len(prompt_token_ids) == 1
-                and hasattr(prompt_token_ids[0], "ids")
+                and (
+                    hasattr(prompt_token_ids[0], "ids")
+                    or torch.is_tensor(prompt_token_ids[0])
+                    or isinstance(prompt_token_ids[0], (list, tuple))
+                )
             ):
-                prompt_token_ids = prompt_token_ids[0].ids
-            prompt_token_ids = list(prompt_token_ids)
+                prompt_token_ids = prompt_token_ids[0]
+                while hasattr(prompt_token_ids, "ids"):
+                    prompt_token_ids = prompt_token_ids.ids
+                if torch.is_tensor(prompt_token_ids):
+                    prompt_token_ids = prompt_token_ids.detach().cpu().tolist()
+            prompt_token_ids = [int(token_id) for token_id in prompt_token_ids]
             instance_config = nemo_gym_result.get("instance_config") or {}
             is_masked_infra_failure = bool(instance_config.get("mask_sample")) or bool(
                 str(nemo_gym_result.get("verify_error") or "")
@@ -509,16 +525,53 @@ Output prompt token IDs: {output_item_dict["prompt_token_ids"]}
             if is_masked_infra_failure:
                 # Preserve group identity without synthesizing assistant tokens.
                 # Downstream masking makes this prompt-only sample loss-free.
-                prompt_message = {
+                grouping_prompt_message = {
                     "role": "user",
                     "content": "",
                     "token_ids": torch.tensor(prompt_token_ids, dtype=torch.long),
                 }
-                return {
-                    "message_log": [prompt_message],
-                    "input_message_log": [prompt_message],
+                safe_token_id = getattr(tokenizer, "eos_token_id", None)
+                if safe_token_id is None:
+                    safe_token_id = getattr(tokenizer, "pad_token_id", None)
+                if safe_token_id is None:
+                    safe_token_id = 0
+                masked_training_message = {
+                    "role": "user",
+                    "content": "",
+                    # The original multimodal prompt may contain image
+                    # placeholders but an infrastructure failure has no image
+                    # tensors. Keep those IDs only for GRPO grouping; the
+                    # loss-free training row must be safe to run through the
+                    # model without projected media.
+                    "token_ids": torch.tensor([safe_token_id], dtype=torch.long),
+                }
+                masked_result = {
+                    "message_log": [masked_training_message],
+                    "input_message_log": [grouping_prompt_message],
                     "full_result": nemo_gym_result,
                 }
+                if "independent_turn_training" in self.cfg:
+                    # Keep masked infrastructure failures in the same training
+                    # representation as successful compacted VLM trajectories.
+                    # The dummy prompt-only unit is loss-free, but prevents one
+                    # failed rollout from turning an otherwise independent-turn
+                    # GRPO batch into a mixed-representation batch.
+                    training_mode = self.cfg["independent_turn_training"]
+                    masked_result.update(
+                        {
+                            "independent_turn_sampled": True,
+                            "independent_turn_training": training_mode,
+                            "independent_turn_message_logs": [
+                                [masked_training_message]
+                            ],
+                            "selected_turn_index": 0,
+                            "trajectory_turn_count": 1,
+                            "training_unit_kind": "masked_infra_failure",
+                            "trajectory_training_unit_count": 1,
+                            "training_unit_turn_counts": [1],
+                        }
+                    )
+                return masked_result
             raise ValueError(
                 f"NeMo Gym returned a result with no generation data. "
                 f"This typically means the prompt for the first turn already exceeds the vLLM max_model_len, "
@@ -556,14 +609,55 @@ Output prompt token IDs: {output_item_dict["prompt_token_ids"]}
         if not trainable_output_items:
             raise ValueError("NeMo Gym returned no trainable multimodal turns.")
 
-        turns: list[
-            tuple[
-                list[dict[str, Any]],
-                list[int],
-                list[int],
-                dict[str, Any],
-            ]
-        ] = []
+        instance_config = nemo_gym_result.get("instance_config") or {}
+        has_missing_media = any(
+            not (item.get("multimodal_inputs") or {}).get("images_base64")
+            for item in trainable_output_items
+        )
+        is_masked_infra_failure = (
+            bool(instance_config.get("mask_sample"))
+            or bool(str(nemo_gym_result.get("verify_error") or ""))
+            or has_missing_media
+        )
+        if is_masked_infra_failure:
+            # A rollout may fail after producing several turns. In that case it
+            # still reaches this multimodal path, but the failed turn can retain
+            # expanded image placeholders while carrying no image tensors.
+            # Mask the whole trajectory before any such row reaches Megatron.
+            prompt_token_ids = trainable_output_items[0].get("prompt_token_ids")
+            if prompt_token_ids is None or len(prompt_token_ids) == 0:
+                prompt_token_ids = [0]
+            safe_token_id = (
+                getattr(tokenizer, "eos_token_id", None)
+                or getattr(tokenizer, "pad_token_id", None)
+                or 0
+            )
+            grouping_prompt_message = {
+                "role": "user",
+                "content": "",
+                "token_ids": torch.tensor(prompt_token_ids, dtype=torch.long),
+            }
+            masked_training_message = {
+                "role": "user",
+                "content": "",
+                "token_ids": torch.tensor([safe_token_id], dtype=torch.long),
+            }
+            training_mode = self.cfg.get("independent_turn_training", "sample")
+            return {
+                "message_log": [masked_training_message],
+                "input_message_log": [grouping_prompt_message],
+                "full_result": nemo_gym_result,
+                "independent_turn_sampled": True,
+                "independent_turn_training": training_mode,
+                "independent_turn_message_logs": [[masked_training_message]],
+                "selected_turn_index": 0,
+                "trajectory_turn_count": 1,
+                "training_unit_kind": "masked_infra_failure",
+                "trajectory_training_unit_count": 1,
+                "training_unit_turn_counts": [1],
+            }
+
+        trajectory = TrajectoryBuffer()
         for output_item_dict in trainable_output_items:
             prompt_token_ids = output_item_dict.pop("prompt_token_ids")
             generation_token_ids = output_item_dict.pop("generation_token_ids")
@@ -624,12 +718,12 @@ Output prompt token IDs: {output_item_dict["prompt_token_ids"]}
                     "for every OSWorld turn."
                 )
 
-            turns.append(
-                (
-                    [user_message, assistant_message],
-                    prompt_token_ids,
-                    generation_token_ids,
-                    multimodal_inputs,
+            trajectory.append(
+                TrajectoryTurn(
+                    message_log=[user_message, assistant_message],
+                    prompt_token_ids=prompt_token_ids,
+                    generation_token_ids=generation_token_ids,
+                    multimodal_inputs=multimodal_inputs,
                 )
             )
 
@@ -644,17 +738,21 @@ Output prompt token IDs: {output_item_dict["prompt_token_ids"]}
         if sampling == "first":
             selected_idx = 0
         elif sampling == "last":
-            selected_idx = len(turns) - 1
+            selected_idx = len(trajectory) - 1
         elif sampling == "random":
-            selected_idx = random.randrange(len(turns))
+            selected_idx = random.randrange(len(trajectory))
         else:
             raise ValueError(
                 "independent_turn_sampling must be one of first, last, random; "
                 f"got {sampling!r}."
             )
 
-        prompt_strs = tokenizer.batch_decode([turn[1] for turn in turns])
-        generation_strs = tokenizer.batch_decode([turn[2] for turn in turns])
+        prompt_strs = tokenizer.batch_decode(
+            [turn.prompt_token_ids for turn in trajectory]
+        )
+        generation_strs = tokenizer.batch_decode(
+            [turn.generation_token_ids for turn in trajectory]
+        )
         for output_item_dict, prompt_str, generation_str in zip(
             trainable_output_items,
             prompt_strs,
@@ -674,78 +772,29 @@ Output prompt token IDs: {output_item_dict["prompt_token_ids"]}
                     "independent_turn_training='all'."
                 )
             training_unit_kind = "segment"
-            current_message_log: list[dict[str, Any]] | None = None
-            current_context_ids: list[int] = []
-            current_images: list[str] = []
-            current_multimodal_inputs: dict[str, Any] | None = None
-            current_turn_count = 0
-
-            def finalize_segment() -> None:
-                nonlocal current_message_log
-                if current_message_log is None or current_multimodal_inputs is None:
-                    return
-                current_message_log[0].update(
+            training_units, turn_to_training_unit = (
+                trajectory.build_monotonic_training_units()
+            )
+            for unit in training_units:
+                unit.message_log[0].update(
                     self._process_dynamic_multimodal_inputs(
                         processor,
-                        current_multimodal_inputs,
+                        unit.multimodal_inputs,
                     )
                 )
-                turn_message_logs.append(current_message_log)
-                training_unit_turn_counts.append(current_turn_count)
-                current_message_log = None
-
-            for message_log, prompt_ids, generation_ids, multimodal_inputs in turns:
-                images = list(multimodal_inputs.get("images_base64") or [])
-                token_prefix_matches = (
-                    current_message_log is not None
-                    and len(prompt_ids) >= len(current_context_ids)
-                    and prompt_ids[: len(current_context_ids)] == current_context_ids
-                )
-                image_prefix_matches = (
-                    len(images) >= len(current_images)
-                    and images[: len(current_images)] == current_images
-                )
-                extends_current_segment = (
-                    token_prefix_matches and image_prefix_matches
-                )
-
-                if not extends_current_segment:
-                    finalize_segment()
-                    current_message_log = message_log
-                    current_turn_count = 1
-                else:
-                    delta_start = len(current_context_ids)
-                    full_user_message = message_log[0]
-                    delta_user_message: dict[str, Any] = {
-                        "role": "user",
-                        "content": "",
-                        "token_ids": torch.tensor(prompt_ids[delta_start:]),
-                    }
-                    if "routed_experts" in full_user_message:
-                        delta_user_message["routed_experts"] = full_user_message[
-                            "routed_experts"
-                        ][delta_start:]
-                    current_message_log.extend(
-                        [delta_user_message, message_log[1]]
-                    )
-                    current_turn_count += 1
-
-                turn_to_training_unit.append(len(turn_message_logs))
-                current_context_ids = prompt_ids + generation_ids
-                current_images = images
-                current_multimodal_inputs = multimodal_inputs
-
-            finalize_segment()
+                turn_message_logs.append(unit.message_log)
+                training_unit_turn_counts.append(unit.turn_count)
         else:
             turn_indices = (
-                range(len(turns)) if training_mode == "all" else [selected_idx]
+                range(len(trajectory)) if training_mode == "all" else [selected_idx]
             )
             for unit_idx, turn_idx in enumerate(turn_indices):
-                message_log = turns[turn_idx][0]
+                turn = trajectory[turn_idx]
+                message_log = turn.message_log
                 message_log[0].update(
                     self._process_dynamic_multimodal_inputs(
                         processor,
-                        turns[turn_idx][3],
+                        turn.multimodal_inputs,
                     )
                 )
                 turn_message_logs.append(message_log)
@@ -759,7 +808,7 @@ Output prompt token IDs: {output_item_dict["prompt_token_ids"]}
         grouping_user_message = {
             "role": "user",
             "content": "",
-            "token_ids": torch.tensor(turns[0][1]),
+            "token_ids": torch.tensor(trajectory[0].prompt_token_ids),
         }
         return {
             "message_log": selected_message_log,
@@ -769,7 +818,7 @@ Output prompt token IDs: {output_item_dict["prompt_token_ids"]}
             "independent_turn_training": training_mode,
             "independent_turn_message_logs": turn_message_logs,
             "selected_turn_index": selected_idx,
-            "trajectory_turn_count": len(turns),
+            "trajectory_turn_count": len(trajectory),
             "training_unit_kind": training_unit_kind,
             "trajectory_training_unit_count": len(turn_message_logs),
             "training_unit_turn_counts": training_unit_turn_counts,

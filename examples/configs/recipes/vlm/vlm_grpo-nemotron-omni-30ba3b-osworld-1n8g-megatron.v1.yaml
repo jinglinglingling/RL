@@ -1,6 +1,7 @@
 defaults: vlm_grpo-nemotron-omni-30ba3b-clevr-1n8g-megatron-tp8ep8.v1.yaml
 
 grpo:
+  seed: ${oc.decode:${oc.env:OSWORLD_SEED,42}}
   # Batch independent task groups while preserving within-prompt GRPO groups.
   num_prompts_per_step: ${oc.decode:${oc.env:OSWORLD_NUM_PROMPTS_PER_STEP,1}}
   # Keep evaluation coverage independent from the inherited 256-sample cap.
@@ -59,11 +60,18 @@ policy:
       # initialized on 80 GB GPUs. Expandable segments reduce fragmentation.
       PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
     optimizer:
+      # The launcher exposes LR per experiment; consume it here instead of
+      # silently inheriting the fixed 2e-7 VLM recipe value.
+      lr: ${oc.decode:${oc.env:OSWORLD_LEARNING_RATE,2e-7}}
+      min_lr: ${oc.decode:${oc.env:OSWORLD_LEARNING_RATE,2e-7}}
       # Keep the full model update while moving Adam state and optimizer
       # compute off GPU; NeMo-RL requires a full fraction for this backend.
       optimizer_cpu_offload: true
       optimizer_offload_fraction: 1.0
     scheduler:
+      # Short OSWorld runs must reach their target LR before training ends.
+      lr_warmup_iters: ${oc.decode:${oc.env:OSWORLD_LR_WARMUP_ITERS,2}}
+      lr_warmup_init: ${oc.decode:${oc.env:OSWORLD_LR_WARMUP_INIT,2e-8}}
       # Smoke checkpoints were created with a shorter max_num_steps. Restore
       # scheduler progress, but extend its horizon to this run's step count.
       override_opt_param_scheduler: true
@@ -115,7 +123,7 @@ env:
     # Keep Gym server environments across Slurm resume segments. The path is
     # fingerprinted by the submitter, so stale dependencies are never reused.
     uv_venv_dir: ${oc.env:OSWORLD_GYM_VENV_DIR,/opt/gym_venvs}
-    uv_cache_dir: ${oc.env:UV_CACHE_DIR,/root/.cache/uv}
+    uv_cache_dir: ${oc.env:OSWORLD_GYM_UV_CACHE_DIR,/root/.cache/uv}
     # A sandbox allocation or guest-side task download can transiently fail
     # before the model emits any tokens. Retry the rollout batch rather than
     # aborting the entire training run with a misleading context-length error.
