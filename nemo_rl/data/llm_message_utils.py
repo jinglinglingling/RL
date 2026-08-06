@@ -363,9 +363,34 @@ def batched_message_log_to_flat_message(
     result = BatchedDataDict()
     for key in all_keys:
         values = [seq.get(key) for seq in sequenced_lists]
-        # if the values are PackedTensors, create a new PackedTensor from the list of values
-        if values and isinstance(values[0], PackedTensor):
-            result[key] = PackedTensor.flattened_concat(values)
+        # Multimodal fields may be absent on a zero-weighted text-only row
+        # (for example, a masked infrastructure failure). Preserve that row's
+        # batch slot with an empty PackedTensor instead of passing None into
+        # flattened_concat.
+        packed_template = next(
+            (value for value in values if isinstance(value, PackedTensor)), None
+        )
+        if packed_template is not None:
+            if any(
+                value is not None and not isinstance(value, PackedTensor)
+                for value in values
+            ):
+                raise TypeError(
+                    f"Mixed PackedTensor and non-PackedTensor values for key {key!r}."
+                )
+            packed_values = [
+                (
+                    PackedTensor(
+                        [None],
+                        packed_template.dim_to_pack,
+                        pad_to_max_shape=packed_template.pad_to_max_shape,
+                    )
+                    if value is None
+                    else value
+                )
+                for value in values
+            ]
+            result[key] = PackedTensor.flattened_concat(packed_values)
             continue
         if not values or not isinstance(values[0], Tensor):
             result[key] = values

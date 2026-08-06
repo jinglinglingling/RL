@@ -14,6 +14,7 @@
 
 
 import glob
+import hashlib
 import json
 import logging
 import os
@@ -364,6 +365,20 @@ class WandbLogger(LoggerInterface):
                 f"{prefix}/{k}" if k != step_metric else k: v
                 for k, v in metrics.items()
             }
+
+        # W&B turns table metric keys into artifact names and appends its own
+        # suffixes. Keep table keys below the public 128-character artifact
+        # limit with deterministic, collision-resistant shortening.
+        safe_artifact_name_budget = 112
+        shortened_metrics = {}
+        for key, value in metrics.items():
+            safe_key = key
+            if isinstance(value, wandb.Table) and len(key) > safe_artifact_name_budget:
+                digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
+                prefix_budget = safe_artifact_name_budget - len(digest) - 1
+                safe_key = f"{key[:prefix_budget]}-{digest}"
+            shortened_metrics[safe_key] = value
+        metrics = shortened_metrics
 
         # If step_metric is provided, use the corresponding value from metrics as step
         if step_metric and step_metric in metrics:

@@ -772,6 +772,36 @@ def test_batched_message_log_to_flat_message_with_packed_images() -> None:
     assert torch.equal(input_lengths, torch.tensor([4, 5], dtype=torch.int32))
 
 
+def test_batched_message_log_to_flat_message_allows_text_only_masked_row():
+    from nemo_rl.data.multimodal_utils import PackedTensor
+
+    batch_logs = [
+        [
+            {
+                "role": "user",
+                "content": "",
+                "token_ids": torch.tensor([1]),
+                "images": PackedTensor(torch.randn(1, 3, 4, 4), dim_to_pack=0),
+            }
+        ],
+        [
+            {
+                "role": "user",
+                "content": "",
+                "token_ids": torch.tensor([0]),
+            }
+        ],
+    ]
+
+    batched, _ = batched_message_log_to_flat_message(
+        batch_logs, pad_value_dict={"token_ids": 0}
+    )
+
+    assert isinstance(batched["images"], PackedTensor)
+    assert len(batched["images"]) == 2
+    assert batched["images"].tensors[1] is None
+
+
 @pytest.mark.hf_gated
 def test_get_formatted_message_log_multimodal_prompt_formatting() -> None:
     processor = AutoProcessor.from_pretrained("Qwen/Qwen2.5-VL-3B-Instruct")
