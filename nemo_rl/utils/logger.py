@@ -366,10 +366,11 @@ class WandbLogger(LoggerInterface):
                 for k, v in metrics.items()
             }
 
-        # W&B turns table metric keys into artifact names and appends its own
-        # suffixes. Keep table keys below the public 128-character artifact
-        # limit with deterministic, collision-resistant shortening.
-        safe_artifact_name_budget = 112
+        # W&B names table artifacts as ``run-{run.id}-{metric_key}``. Account
+        # for that prefix, including projects which use a long run name as the
+        # run ID, while preserving a deterministic hash suffix.
+        run_id = str(getattr(self.run, "id", "") or "")
+        safe_artifact_name_budget = max(32, min(112, 120 - len(run_id)))
         shortened_metrics = {}
         for key, value in metrics.items():
             safe_key = key
