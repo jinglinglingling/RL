@@ -30,7 +30,7 @@ export OSWORLD_DYNAMIC_SAMPLING_MAX_GEN_BATCHES=1
 export OSWORLD_INDEPENDENT_TURN_TRAINING=all
 export OSWORLD_INDEPENDENT_TURN_SAMPLING=first
 export OSWORLD_MONOTONIC_SEGMENTS=true
-export OSWORLD_HISTORY_MODE=reference
+export OSWORLD_HISTORY_MODE=full_trajectory
 
 # T3 retains every screenshot. The TrajectoryBuffer should therefore emit one
 # prefix-monotonic training sequence containing all three generated actions.
