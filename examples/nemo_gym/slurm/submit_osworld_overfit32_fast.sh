@@ -52,7 +52,9 @@ export WANDB_ENABLED="${WANDB_ENABLED:-true}"
 export WANDB_ENTITY="${WANDB_ENTITY:-nvidia}"
 export WANDB_PROJECT="${WANDB_PROJECT:-osworld-grpo}"
 export WANDB_RUN_NAME="${WANDB_RUN_NAME:-${RUN_NAME}}"
-export WANDB_RUN_ID="${WANDB_RUN_ID:-${RUN_NAME}}"
+# Keep the human-readable name, but use a bounded stable ID. W&B prefixes
+# table artifacts with the run ID and rejects the resulting name above 128 chars.
+export WANDB_RUN_ID="${WANDB_RUN_ID:-$(printf '%s' "${RUN_NAME}" | sha256sum | cut -c1-20)}"
 export WANDB_RESUME="${WANDB_RESUME:-allow}"
 
 export SBATCH_TIME="${SBATCH_TIME:-04:00:00}"
