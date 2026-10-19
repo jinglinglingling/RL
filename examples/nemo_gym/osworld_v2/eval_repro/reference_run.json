@@ -1,0 +1,66 @@
+{
+  "protocol": "osworld-v1-parity-361x4",
+  "completed_at": "2026-10-19",
+  "evaluated_rl_base_commit": "d8a2bcc11048f87f5f7d7c36c7e17d5ac4f25051",
+  "evaluated_gym_snapshot_commit": "e576a61338d048ab337929e288b557aa0ed7ef94",
+  "container": {
+    "name": "rl-osworld-v2-qualified-69764640.sqsh",
+    "size_bytes": 69371641856,
+    "sha256": "1b4edcdeac017210e6abe25885372e025ac111c45aeb038bda334659436eb74e"
+  },
+  "sampling": {
+    "tasks": 361,
+    "generations_per_task": 4,
+    "max_steps": 100,
+    "max_new_tokens": 16384,
+    "model_temperature": 0.6,
+    "agent_temperature": 0.6,
+    "top_p": 1.0,
+    "max_parallel_rollouts": 32,
+    "model_endpoint_readiness_timeout_seconds": 1800
+  },
+  "task_shards": [
+    {
+      "name": "validation_nogdrive_361_q01.jsonl",
+      "tasks": 91,
+      "sha256": "ee5f15e0daf9bcc162d17a34dd94c27c8026a0cdeaed97a930dc309c244a1565"
+    },
+    {
+      "name": "validation_nogdrive_361_q02.jsonl",
+      "tasks": 90,
+      "sha256": "c9c42527aa3db69b738663b0601ec0cee407c3cefa4ebdd02c976fca633c829a"
+    },
+    {
+      "name": "validation_nogdrive_361_q03.jsonl",
+      "tasks": 90,
+      "sha256": "0c15e91abbcde4287f85ba4ec38b609fc9f6fa5a87756d2180e6fd79011476c1"
+    },
+    {
+      "name": "validation_nogdrive_361_q04.jsonl",
+      "tasks": 90,
+      "sha256": "9a708bb3364e0a8ae8022251754afb3dd054f5b53a966af9de8d99f1a3528eb6"
+    }
+  ],
+  "models": {
+    "rfc0040_iter_0000881_hf": {
+      "config_sha256": "bf8859c106ef73d65fd194cbd336584d24dceaf724a408c762db7945e3925957",
+      "chat_template_sha256": "41428e0c65e312c359df2495ef5284769a9520b15a693deda4c34a1538208faa",
+      "model_index_sha256": "5d1e75be76c45ffec055bedbb4dc1ef3ef481f45474ba531c771ae3732910386",
+      "jobs": [20460932, 20460933, 20460935, 20460936],
+      "successes": 716,
+      "solved_tasks": 255,
+      "pass_at_1": 0.49584487534626037,
+      "pass_at_4": 0.7063711911357341
+    },
+    "rfc0037_step400_sft_hf": {
+      "config_sha256": "bf8859c106ef73d65fd194cbd336584d24dceaf724a408c762db7945e3925957",
+      "chat_template_sha256": "ab7813c3abdd9cb655905a410728b26c7884eca45ddfab8d9f931553485a7862",
+      "model_index_sha256": "cb58310a2a499eb63abe7f2739c718a80bf2f6088200c97f438ce27e4db9b8ae",
+      "jobs": [20460992, 20460993, 20460994, 20460995],
+      "successes": 700,
+      "solved_tasks": 257,
+      "pass_at_1": 0.48476454293628807,
+      "pass_at_4": 0.7119113573407202
+    }
+  }
+}

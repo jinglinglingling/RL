@@ -191,6 +191,10 @@ The repository also includes the v1-parity 361-task x 4-rollout evaluator:
 - restored NeMo RL checkpoint:
   `grpo_nemotron_omni_30ba3b_osworld_v2_checkpoint_inference_v1_parity.yaml`
 
+For the exact four-shard launcher, task-manifest generator, result aggregator,
+and reference artifacts from the RFC0037/RFC0040 paired run, see
+[`eval_repro/README.md`](eval_repro/README.md).
+
 These intentionally use the legacy validation runner because SingleController
 does not own the evaluation loop. Training itself remains entirely on
 SingleController + TransferQueue.
