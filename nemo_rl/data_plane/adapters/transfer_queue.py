@@ -777,12 +777,15 @@ _STORAGE_UNITS_SC_ONLY = (
 def _pin_simple_storage_units(node_ids: list[str]) -> None:
     """Make TQ's SimpleStorage bootstrap start unit ``i`` on ``node_ids[i]``.
 
-    TQ (pin c51614308b) always places units with a SPREAD placement group,
-    which leaves the count per node to Ray. This replaces that registered
-    provider for this process; the rest mirrors TQ's
-    ``initialize_simple_storage``.
+    TQ always places units with its own scheduling strategy, which leaves the
+    count per node to Ray. This replaces that registered provider for this
+    process; the rest mirrors TQ's ``initialize_simple_storage``. Nightly
+    containers may carry the newer config-based actor constructor while the
+    repository pin still uses ``storage_unit_size``, so support both APIs.
     """
+    import inspect
     import math
+    from uuid import uuid4
 
     from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
     from transfer_queue.storage.bootstrap.provider import StorageBootstrapProvider
@@ -797,15 +800,24 @@ def _pin_simple_storage_units(node_ids: list[str]) -> None:
             raise ValueError(
                 f"{len(node_ids)} node IDs for {num_units} SimpleStorage units"
             )
-        total = simple.get("total_storage_size", None)
-        unit_size = math.ceil(total / num_units) if total is not None else None
+        actor_metadata = getattr(SimpleStorageUnit, "__ray_metadata__", None)
+        actor_impl = getattr(actor_metadata, "modified_class", SimpleStorageUnit)
+        actor_parameters = inspect.signature(actor_impl.__init__).parameters
+        if "config" in actor_parameters:
+            simple_config = dict(simple)
+            simple_config["_run_id"] = uuid4().hex
+            actor_kwargs = {"config": simple_config}
+        else:
+            total = simple.get("total_storage_size", None)
+            unit_size = math.ceil(total / num_units) if total is not None else None
+            actor_kwargs = {"storage_unit_size": unit_size}
         handles = {}
         for rank, node_id in enumerate(node_ids):
             name = f"TransferQueueStorageUnit#{rank}"
             handles[name] = SimpleStorageUnit.options(  # type: ignore[attr-defined]
                 name=name,
                 scheduling_strategy=NodeAffinitySchedulingStrategy(node_id, soft=False),
-            ).remote(storage_unit_size=unit_size)
+            ).remote(**actor_kwargs)
         simple.zmq_info = process_zmq_server_info(handles)
         return handles
 

@@ -3,6 +3,35 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 source "$SCRIPT_DIR/runtime_env.sh"
+
+# Context-compacted rollouts can contain more physical TQ rows than the logical
+# num_generations_per_prompt group size, so this branch cannot restore their
+# buffered replay sidecars. Opt in to a replay-free resume while preserving the
+# artifacts for diagnosis instead of failing after model initialization.
+if [[ "${OSWORLD_DISCARD_REPLAY_ON_RESUME:-0}" == "1" ]]; then
+  latest_status="$OSWORLD_CHECKPOINT_DIR/latest_checkpoint_status.json"
+  if [[ -s "$latest_status" ]]; then
+    latest_step="$(
+      "$OSWORLD_COMPONENT_PYTHON" - "$latest_status" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as status_file:
+    print(int(json.load(status_file)["last_checkpoint_step"]))
+PY
+    )"
+    latest_checkpoint="$OSWORLD_CHECKPOINT_DIR/step_$latest_step"
+    quarantine_suffix="discarded-cc-replay-${SLURM_JOB_ID:-manual}"
+    for sidecar in replay_buffer_metadata.pt rollout_recovery.pt; do
+      sidecar_path="$latest_checkpoint/$sidecar"
+      if [[ -f "$sidecar_path" ]]; then
+        mv -- "$sidecar_path" "$sidecar_path.$quarantine_suffix"
+        echo "Quarantined unsupported CC replay sidecar: $sidecar_path"
+      fi
+    done
+  fi
+fi
+
 "$SCRIPT_DIR/prepare_gym_agent.sh"
 cd "$OSWORLD_RL_ROOT"
 
@@ -33,6 +62,21 @@ fi
 if [[ -n "${OSWORLD_LOGPROB_MB_TOKENS:-}" ]]; then
   OVERRIDES+=(
     "policy.sequence_packing.logprob_mb_tokens=$OSWORLD_LOGPROB_MB_TOKENS"
+  )
+fi
+if [[ -n "${OSWORLD_OPTIMIZER_OFFLOAD_FRACTION:-}" ]]; then
+  OVERRIDES+=(
+    "policy.megatron_cfg.optimizer.optimizer_offload_fraction=$OSWORLD_OPTIMIZER_OFFLOAD_FRACTION"
+  )
+fi
+if [[ -n "${OSWORLD_PYTORCH_CUDA_ALLOC_CONF:-}" ]]; then
+  OVERRIDES+=(
+    "policy.megatron_cfg.env_vars={PYTORCH_CUDA_ALLOC_CONF: \"$OSWORLD_PYTORCH_CUDA_ALLOC_CONF\"}"
+  )
+fi
+if [[ -n "${OSWORLD_STORAGE_UNIT_PLACEMENT:-}" ]]; then
+  OVERRIDES+=(
+    "+data_plane.simple.storage_unit_placement=[$OSWORLD_STORAGE_UNIT_PLACEMENT]"
   )
 fi
 if [[ -n "${OSWORLD_TEMPERATURE:-}" ]]; then

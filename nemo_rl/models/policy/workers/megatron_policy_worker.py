@@ -4818,6 +4818,11 @@ class MegatronPolicyWorkerImpl(
                     ckpt_cfg=self.mcore_state.cfg.checkpoint,
                     blocking=True,
                 )
+                # Distributed checkpoint planning/serialization creates large
+                # temporary CPU tensor graphs. Release unreachable staging
+                # objects before the next train step so Ray's host-memory
+                # monitor does not kill otherwise healthy policy workers.
+                gc.collect()
             if self.should_disable_forward_pre_hook:
                 self.enable_forward_pre_hook()
 
