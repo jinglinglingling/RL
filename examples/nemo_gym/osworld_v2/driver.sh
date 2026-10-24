@@ -95,6 +95,27 @@ if [[ -n "${OSWORLD_MAX_BUFFERED_ROLLOUTS:-}" ]]; then
     "async_rl.max_buffered_rollouts=$OSWORLD_MAX_BUFFERED_ROLLOUTS"
   )
 fi
+if [[ -n "${OSWORLD_NUM_PROMPTS_PER_STEP:-}" ]]; then
+  OVERRIDES+=(
+    "grpo.num_prompts_per_step=$OSWORLD_NUM_PROMPTS_PER_STEP"
+    "async_rl.min_groups_for_streaming_train=$OSWORLD_NUM_PROMPTS_PER_STEP"
+  )
+fi
+if [[ -n "${OSWORLD_NUM_GENERATIONS_PER_PROMPT:-}" ]]; then
+  OVERRIDES+=(
+    "grpo.num_generations_per_prompt=$OSWORLD_NUM_GENERATIONS_PER_PROMPT"
+  )
+fi
+if [[ -n "${OSWORLD_TRAIN_GLOBAL_BATCH_SIZE:-}" ]]; then
+  OVERRIDES+=(
+    "policy.train_global_batch_size=$OSWORLD_TRAIN_GLOBAL_BATCH_SIZE"
+  )
+fi
+if [[ -n "${OSWORLD_GENERATION_BATCH_SIZE:-}" ]]; then
+  OVERRIDES+=(
+    "policy.generation_batch_size=$OSWORLD_GENERATION_BATCH_SIZE"
+  )
+fi
 
 exec "$OSWORLD_DRIVER_PYTHON" \
   examples/nemo_gym/launch_osworld_v2_cc.py \
