@@ -380,7 +380,7 @@ while [[ -e "$series_root/segments/segment-$(printf '%03d' "$next_segment")" ]];
   next_segment=$((next_segment + 1))
 done
 
-previous_job=""
+previous_job="${OSWORLD_CHAIN_AFTER_JOB:-}"
 submission_manifest="$series_root/submissions.tsv"
 if [[ ! -e "$submission_manifest" ]]; then
   printf 'segment\tjob_id\tdependency\tlog_dir\n' > "$submission_manifest"
