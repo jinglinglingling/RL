@@ -672,6 +672,13 @@ class PolicyConfig(TypedDict):
     tokenizer: TokenizerConfig
     train_global_batch_size: int
     train_micro_batch_size: int
+    # Bound the number of physical data-plane rows materialized by one split
+    # policy dispatch. The logical optimizer step and its normalization still
+    # span the complete batch.
+    train_max_physical_rows_per_dispatch: NotRequired[int | None]
+    # Independently bound physical rows materialized by one logprob dispatch.
+    # Defaults to the training limit when omitted.
+    logprob_max_physical_rows_per_dispatch: NotRequired[int | None]
     offload_optimizer_for_logprob: bool
     logprob_batch_size: NotRequired[int]
     # If set, log probability computation is chunked along the sequence dimension to avoid GPU OOM (especially during backward pass).

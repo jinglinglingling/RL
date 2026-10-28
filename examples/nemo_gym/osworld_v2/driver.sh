@@ -52,6 +52,9 @@ fi
 if [[ -n "${OSWORLD_MAX_TOTAL_SEQUENCE_LENGTH:-}" ]]; then
   OVERRIDES+=(
     "policy.max_total_sequence_length=$OSWORLD_MAX_TOTAL_SEQUENCE_LENGTH"
+    # NeMo-Gym delegates truncation to the generation engine, so keep its
+    # context limit aligned with the policy/packing limit.
+    "policy.generation.vllm_cfg.max_model_len=$OSWORLD_MAX_TOTAL_SEQUENCE_LENGTH"
   )
 fi
 if [[ -n "${OSWORLD_TRAIN_MB_TOKENS:-}" ]]; then
@@ -98,7 +101,11 @@ fi
 if [[ -n "${OSWORLD_NUM_PROMPTS_PER_STEP:-}" ]]; then
   OVERRIDES+=(
     "grpo.num_prompts_per_step=$OSWORLD_NUM_PROMPTS_PER_STEP"
-    "async_rl.min_groups_for_streaming_train=$OSWORLD_NUM_PROMPTS_PER_STEP"
+  )
+fi
+if [[ -n "${OSWORLD_MIN_GROUPS_FOR_STREAMING_TRAIN:-}" ]]; then
+  OVERRIDES+=(
+    "async_rl.min_groups_for_streaming_train=$OSWORLD_MIN_GROUPS_FOR_STREAMING_TRAIN"
   )
 fi
 if [[ -n "${OSWORLD_NUM_GENERATIONS_PER_PROMPT:-}" ]]; then
@@ -114,6 +121,16 @@ fi
 if [[ -n "${OSWORLD_GENERATION_BATCH_SIZE:-}" ]]; then
   OVERRIDES+=(
     "policy.generation_batch_size=$OSWORLD_GENERATION_BATCH_SIZE"
+  )
+fi
+if [[ -n "${OSWORLD_TRAIN_MAX_PHYSICAL_ROWS_PER_DISPATCH:-}" ]]; then
+  OVERRIDES+=(
+    "policy.train_max_physical_rows_per_dispatch=$OSWORLD_TRAIN_MAX_PHYSICAL_ROWS_PER_DISPATCH"
+  )
+fi
+if [[ -n "${OSWORLD_LOGPROB_MAX_PHYSICAL_ROWS_PER_DISPATCH:-}" ]]; then
+  OVERRIDES+=(
+    "policy.logprob_max_physical_rows_per_dispatch=$OSWORLD_LOGPROB_MAX_PHYSICAL_ROWS_PER_DISPATCH"
   )
 fi
 

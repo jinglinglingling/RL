@@ -18,6 +18,7 @@ import pytest
 import torch
 
 from nemo_rl.utils.packed_tensor import (
+    _pack_tensors_for_broadcast,
     packed_broadcast_consumer,
     packed_broadcast_producer,
 )
@@ -68,6 +69,16 @@ def create_mock_model_params():
 def create_mock_state_dict_info(params):
     """Create state dict info (name -> (shape, dtype)) from params."""
     return {name: (tensor.shape, tensor.dtype) for name, tensor in params}
+
+
+def test_single_tensor_broadcast_pack_avoids_copy():
+    tensor = torch.arange(16, dtype=torch.uint8)
+
+    with patch("nemo_rl.utils.packed_tensor.torch.cat") as cat_mock:
+        packed = _pack_tensors_for_broadcast([tensor])
+
+    cat_mock.assert_not_called()
+    assert packed is tensor
 
 
 def test_packed_broadcast_consumer_callback_is_eager(monkeypatch):
@@ -255,7 +266,7 @@ def test_packed_broadcast_single_large_tensor():
     # Small target size to force the tensor to exceed it
     with patch(
         "nemo_rl.utils.packed_tensor.get_target_packed_tensor_size", return_value=100
-    ):
+    ), patch("nemo_rl.utils.packed_tensor.torch.cat") as cat_mock:
         packed_broadcast_producer(
             iterator=iter(params),
             group=mock_group,
@@ -264,6 +275,7 @@ def test_packed_broadcast_single_large_tensor():
         )
 
     # Should still broadcast the tensor
+    cat_mock.assert_not_called()
     assert mock_group.broadcast_count == 1
     assert len(mock_group.broadcasted_tensors) == 1
 

@@ -400,6 +400,60 @@ def test_references_disambiguate_equal_content_without_bypassing_validation() ->
     assert select_captured_calls(records, result) == [records[1]]
 
 
+def test_ambiguous_equal_captures_mask_only_the_rollout(
+    captured: Any,  # noqa: F811
+) -> None:
+    captured.queue.extend(
+        {"role": "assistant", "content": "same", "reasoning": None}
+        for _ in range(2)
+    )
+    prompt = [{"role": "user", "content": "task"}]
+    first = captured.harness.post("owner", prompt).json()
+    captured.harness.post("owner", prompt)
+
+    result = asyncio.run(
+        _env(captured.harness)._postprocess_receipt_mode(
+            {"_ng_rollout_id": "owner"},
+            {
+                "response": {"id": "export", "output": first["output"]},
+                "reward": 1.0,
+                "instance_config": {"mask_sample": False},
+            },
+        )
+    )
+
+    assert result["receipt"]["capture_poisoned"] is True
+    assert result["receipt"]["failure_reason"] == "capture_selection_ambiguous"
+    assert result["logical_selection"].response_ids == ()
+
+
+def test_environment_failure_before_first_model_call_is_masked(
+    captured: Any,  # noqa: F811
+) -> None:
+    env = _env(captured.harness)
+    env._control = AsyncMock(
+        return_value=RolloutManifest(rollout_id="owner").model_dump(mode="json")
+    )
+
+    result = asyncio.run(
+        env._postprocess_receipt_mode(
+            {"_ng_rollout_id": "owner"},
+            {
+                "response": {"id": "empty", "output": []},
+                "reward": 0.0,
+                "instance_config": {"mask_sample": True},
+            },
+        )
+    )
+
+    assert result["receipt"]["capture_poisoned"] is True
+    assert (
+        result["receipt"]["failure_reason"]
+        == "environment_failed_before_model"
+    )
+    assert result["logical_selection"].response_ids == ()
+
+
 @pytest.mark.parametrize("output", [[], [message("first")]])
 def test_output_must_cover_all_explicitly_referenced_calls(output: list[dict]) -> None:
     records = [call(1, [message("first")]), call(2, [message("second")])]

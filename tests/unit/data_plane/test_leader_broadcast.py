@@ -502,6 +502,45 @@ def test_packed_wire_broadcast_uses_bounded_chunks(monkeypatch):
     assert torch.equal(received, source)
 
 
+def test_plain_host_tensor_uses_bounded_staging_for_nccl(monkeypatch):
+    import nemo_rl.data_plane.worker_mixin as worker_mixin
+
+    source = torch.arange(12, dtype=torch.float32).reshape(3, 4)
+    calls = []
+
+    monkeypatch.setattr(torch.distributed, "get_backend", lambda _group: "nccl")
+    monkeypatch.setattr(
+        torch.cuda, "current_device", lambda: torch.device("cuda:0")
+    )
+    monkeypatch.setattr(
+        torch.distributed,
+        "broadcast_object_list",
+        lambda _payload, *, src, group: None,
+    )
+
+    def staged(flat, **kwargs):
+        calls.append((flat, kwargs))
+        return None
+
+    monkeypatch.setattr(worker_mixin, "_broadcast_packed_wire", staged)
+    data = BatchedDataDict({"input_ids": source})
+
+    out = _broadcast_batched_data_dict(
+        data,
+        is_leader=True,
+        src=0,
+        group=object(),
+    )
+
+    assert out["input_ids"] is source
+    assert len(calls) == 1
+    flat, kwargs = calls[0]
+    assert torch.equal(flat, source.reshape(-1))
+    assert kwargs["total_elements"] == source.numel()
+    assert kwargs["src_device"] == "cpu"
+    assert kwargs["bcast_device"] == torch.device("cuda:0")
+
+
 def test_get_replica_group_default_is_none():
     """TQWorkerMixin._get_replica_group must default to None.
 

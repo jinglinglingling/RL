@@ -235,6 +235,26 @@ def replay_manifest_digest(groups: list[TQReplayGroupMetadata]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _checkpoint_group_size(meta: KVBatchMeta) -> int:
+    """Count logical rollouts; CC groups store one row per physical segment."""
+    tags = meta.tags or []
+    if not any("logical_group_size" in tag for tag in tags):
+        return len(meta.sample_ids)
+    sizes = {tag.get("logical_group_size") for tag in tags}
+    dispatch_ids = {tag.get("dispatch_group_id") for tag in tags}
+    if len(sizes) != 1 or len(dispatch_ids) != 1:
+        return -1
+    (size,) = sizes
+    slots = {
+        tag.get("logical_slot")
+        for tag in tags
+        if tag.get("is_execution_padding") is not True
+    }
+    if type(size) is not int or slots != set(range(size)):
+        return -1
+    return size
+
+
 class DataPlaneMutationCut:
     """Live capability proving code runs inside a data-plane barrier cut."""
 
@@ -1859,7 +1879,8 @@ class TQReplayBuffer:
                 len(meta.sequence_lengths) if meta.sequence_lengths is not None else -1
             )
             if not (
-                len(meta.sample_ids) == num_tags == num_lengths == expected_group_size
+                len(meta.sample_ids) == num_tags == num_lengths
+                and _checkpoint_group_size(meta) == expected_group_size
             ):
                 raise ValueError(
                     "Replay buffer checkpoint group misaligned: "

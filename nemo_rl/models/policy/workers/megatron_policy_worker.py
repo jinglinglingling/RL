@@ -4772,7 +4772,21 @@ class MegatronPolicyWorkerImpl(
                 and not self.optimizer_cpu_offload
             ):
                 self.move_optimizer("cuda")
+            # Long exact-trace steps can leave large, unused allocator segments
+            # cached after the final refit. Torch distributed checkpointing
+            # needs a small amount of fresh CUDA memory for NCCL planning, so
+            # release those segments before entering its collectives.
+            gc.collect()
+            if self.cfg["megatron_cfg"]["empty_unused_memory_level"] >= 1:
+                torch.cuda.empty_cache()
             torch.cuda.synchronize()
+            free_bytes, total_bytes = torch.cuda.mem_get_info()
+            print(
+                "Checkpoint CUDA preflight: "
+                f"rank={torch.distributed.get_rank()} "
+                f"free_gib={free_bytes / (1024**3):.2f} "
+                f"total_gib={total_bytes / (1024**3):.2f}"
+            )
 
             self.mcore_state.cfg.checkpoint.save = weights_path
 

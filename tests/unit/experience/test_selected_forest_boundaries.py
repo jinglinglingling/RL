@@ -142,6 +142,45 @@ def test_twenty_calls_keep_baseline_rows(forest: ForestCapture, compact: bool) -
 
 
 @pytest.mark.parametrize(
+    "parents",
+    [
+        [None] + list(range(19)),
+        [None, 0, 0],
+        [None, None, 0, None, 1, 3, 2],
+    ],
+    ids=["linear", "shared-fork", "compacted-fork"],
+)
+def test_content_and_explicit_id_joins_plan_identical_rows(
+    forest: ForestCapture, parents: list[int | None]
+) -> None:
+    records, replies = forest.capture(parents)
+    content_result = ordinary(replies)
+    explicit_result = ordinary(replies)
+    explicit_result["ng_trajectory"] = {
+        "turns": [
+            {
+                "model_calls": [
+                    {"response_id": record.response_id} for record in records
+                ]
+            }
+        ]
+    }
+
+    content_selected = select_captured_calls(records, content_result)
+    explicit_selected = select_captured_calls(records, explicit_result)
+    assert content_selected == explicit_selected == records
+
+    wire_receipt = receipt(records, terminal=records[-1])
+    plans = [
+        forest.finalizer._plan_selected_calls(
+            ["attempt"], [wire_receipt], [selection(selected)]
+        )
+        for selected in (content_selected, explicit_selected)
+    ]
+    assert plans[0] == plans[1]
+
+
+@pytest.mark.parametrize(
     "parents,expected_rows",
     [
         ([None, None, 0, 1], 2),
@@ -266,12 +305,50 @@ def test_shared_forest_loss_and_gradient_match_independent_calls(
         torch.testing.assert_close(got, want, atol=1e-12, rtol=1e-12)
 
 
-def test_omitted_ancestor_stays_rejected(forest: ForestCapture) -> None:
+def test_unselected_ancestor_is_context_without_loss(forest: ForestCapture) -> None:
     records, replies = forest.capture([None, 0, 1])
     selected = select_captured_calls(records, ordinary([replies[0], replies[2]]))
-    with pytest.raises(ValueError, match="selected predecessor"):
-        publish(forest, records, selected)
-    assert not any(partition == "canonical" for partition, _ in forest.plane.rows)
+    assert selected == [records[0], records[2]]
+
+    result = publish(forest, records, selected)
+
+    assert result.valid_row_count == 1
+    assert_loss_once(forest, selected, records)
+    row = forest.plane.rows["canonical", result.meta.sample_ids[0]]
+    # The middle call remains in the exact reconstructed context.
+    assert 1002 in row["input_ids"].tolist()[0]
+    # But its sampled token is excluded from policy loss.
+    assert not any(
+        token == 1002 and active
+        for token, active in zip(
+            row["input_ids"].tolist()[0],
+            row["token_mask"].tolist()[0],
+            strict=True,
+        )
+    )
+    assert not any(partition == "staged" for partition, _ in forest.plane.rows)
+
+
+def test_explicit_accepted_id_keeps_rejected_retry_as_context(
+    forest: ForestCapture,
+) -> None:
+    records, replies = forest.capture([None, 0, 1])
+    result = ordinary([replies[2]])
+    result["ng_trajectory"] = {
+        "turns": [
+            {"model_calls": [{"response_id": records[2].response_id}]}
+        ]
+    }
+
+    selected = select_captured_calls(records, result)
+    assert selected == [records[2]]
+    finalized = publish(forest, records, selected)
+
+    assert finalized.valid_row_count == 1
+    assert_loss_once(forest, selected, records)
+    row = forest.plane.rows["canonical", finalized.meta.sample_ids[0]]
+    assert row["input_ids"].tolist()[0] == [10, 11, 1001, 20, 21, 1002, 30, 31, 1003]
+    assert row["token_mask"].tolist()[0] == [0, 0, 0, 0, 0, 0, 0, 0, 1]
 
 
 def test_excluded_leaf_preserves_selected_ancestor(forest: ForestCapture) -> None:
@@ -359,6 +436,7 @@ def test_shared_paths_need_loss_ownership_beyond_planning(
         [1.0],
         [False],
         canonical_sample_ids=["group_g0"],
+        reward_checks=[None],
     )
     assert prepared.valid_owner_count == 1
     assert all(row.valid for row in prepared.rows)
@@ -382,7 +460,7 @@ def test_invalid_selected_edges_fail_before_publication(
         "future": records[2].model_call_id,
     }[bad_parent]
     records[1] = records[1].model_copy(update={"parent_call_id": parent})
-    with pytest.raises(ValueError, match="selected predecessor"):
+    with pytest.raises(ValueError, match="captured parent chain"):
         publish(forest, records, records)
     assert not any(partition == "canonical" for partition, _ in forest.plane.rows)
 
@@ -435,6 +513,7 @@ def test_shared_plan_and_masks_survive_selection_serialization(
             [1.0],
             [False],
             canonical_sample_ids=["group_g0"],
+                reward_checks=[None],
         )
         for plan in plans
     ]

@@ -26,6 +26,10 @@ from nemo_gym.token_id_capture.completion import output_item_fingerprint
 from nemo_gym.token_id_capture.staging.records import CallRecord
 
 
+class AmbiguousCapturedCallsError(ValueError):
+    """Ordinary output is valid but cannot identify one captured call."""
+
+
 def _output_items(
     result: dict[str, Any], *, captured_response_ids: set[str]
 ) -> tuple[list[dict[str, Any]], dict[int, str]]:
@@ -217,7 +221,8 @@ def select_captured_calls(
                     if matches
                     else "no whole captured call matches content and identity"
                 )
-                raise ValueError(
+                error_type = AmbiguousCapturedCallsError if matches else ValueError
+                raise error_type(
                     "Missing or ambiguous captured generation in ordinary output: "
                     f"authored_output_index={position}, "
                     f"item_id={items[position].get('id')!r}, reason={reason}; "

@@ -190,6 +190,127 @@ class TestTQPolicySplitFanout:
         # get_all_worker_results (unlike the single-data fan-outs)
         wg.get_all_worker_results.assert_called_once()
 
+    def test_train_microbatches_bounds_physical_rows_without_splitting_step(self):
+        p, wg = _make_tq_policy()
+        p.cfg["train_max_physical_rows_per_dispatch"] = 2
+        meta = KVBatchMeta(
+            partition_id="train",
+            task_name="train",
+            sample_ids=[f"s{i}" for i in range(5)],
+            sequence_lengths=[10, 20, 30, 40, 50],
+            tags=[{"row": i} for i in range(5)],
+        )
+        sharded_inputs = []
+
+        def _shard(train_meta, **_kwargs):
+            sharded_inputs.append(train_meta)
+            return [train_meta, train_meta], None
+
+        with (
+            patch.object(TQPolicy, "_stamp_pad_seqlen"),
+            patch.object(TQPolicy, "_packing_args", return_value=(None, None)),
+            patch(
+                "nemo_rl.models.policy.tq_policy.shard_meta_for_dp",
+                side_effect=_shard,
+            ),
+        ):
+            p.train_microbatches_from_meta(meta)
+
+        assert [batch.sample_ids for batch in sharded_inputs] == [
+            ["s0", "s1"],
+            ["s2", "s3"],
+            ["s4"],
+        ]
+        assert [
+            sample_id for batch in sharded_inputs for sample_id in batch.sample_ids
+        ] == meta.sample_ids
+        assert [batch.sequence_lengths for batch in sharded_inputs] == [
+            [10, 20],
+            [30, 40],
+            [50],
+        ]
+        assert wg.run_all_workers_sharded_data.call_count == 3
+        # Partitioning is inside an already-open split step. It must not create
+        # extra begin/finish calls (and therefore cannot step the optimizer).
+        wg.run_all_workers_single_data.assert_not_called()
+
+    @pytest.mark.parametrize("row_limit", [True, 0, -1, 1.5, "32"])
+    def test_train_microbatches_rejects_invalid_physical_row_limit(self, row_limit):
+        p, wg = _make_tq_policy()
+        p.cfg["train_max_physical_rows_per_dispatch"] = row_limit
+
+        with pytest.raises(
+            ValueError,
+            match="train_max_physical_rows_per_dispatch",
+        ):
+            p.train_microbatches_from_meta(_meta())
+
+        wg.run_all_workers_sharded_data.assert_not_called()
+
+    def test_logprob_dispatch_bounds_physical_rows(self):
+        p, wg = _make_tq_policy()
+        p.cfg["logprob_max_physical_rows_per_dispatch"] = 2
+        meta = KVBatchMeta(
+            partition_id="train",
+            task_name="prev_lp",
+            sample_ids=[f"s{i}" for i in range(5)],
+            sequence_lengths=[10, 20, 30, 40, 50],
+            tags=[{"row": i} for i in range(5)],
+        )
+        sharded_inputs = []
+
+        def _shard(logprob_meta, **_kwargs):
+            sharded_inputs.append(logprob_meta)
+            return [logprob_meta, logprob_meta], None
+
+        with (
+            patch.object(TQPolicy, "_stamp_pad_seqlen"),
+            patch.object(TQPolicy, "_packing_args", return_value=(None, None)),
+            patch(
+                "nemo_rl.models.policy.tq_policy.shard_meta_for_dp",
+                side_effect=_shard,
+            ),
+        ):
+            p._logprob_dispatch(
+                meta,
+                task_name="prev_lp",
+                worker_method="get_logprobs_presharded",
+                timer_prefix="get_logprobs",
+                timer=None,
+                common_kwargs={"micro_batch_size": 1},
+            )
+
+        assert [batch.sample_ids for batch in sharded_inputs] == [
+            ["s0", "s1"],
+            ["s2", "s3"],
+            ["s4"],
+        ]
+        assert wg.run_all_workers_sharded_data.call_count == 3
+        assert wg.get_all_worker_results.call_count == 3
+
+    @pytest.mark.parametrize("row_limit", [True, 0, -1, 1.5, "32"])
+    def test_logprob_dispatch_rejects_invalid_physical_row_limit(self, row_limit):
+        p, wg = _make_tq_policy()
+        p.cfg["logprob_max_physical_rows_per_dispatch"] = row_limit
+
+        with (
+            patch.object(TQPolicy, "_packing_args", return_value=(None, None)),
+            pytest.raises(
+                ValueError,
+                match="logprob_max_physical_rows_per_dispatch",
+            ),
+        ):
+            p._logprob_dispatch(
+                _meta(),
+                task_name="prev_lp",
+                worker_method="get_logprobs_presharded",
+                timer_prefix="get_logprobs",
+                timer=None,
+                common_kwargs={"micro_batch_size": 1},
+            )
+
+        wg.run_all_workers_sharded_data.assert_not_called()
+
     def test_train_microbatches_fetches_only_requested_fields(self):
         p, _ = _make_tq_policy()
         meta = _meta()

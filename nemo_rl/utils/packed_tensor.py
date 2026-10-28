@@ -37,6 +37,13 @@ def get_num_buffers():
     return int(os.getenv("NRL_REFIT_NUM_BUFFERS", "2"))
 
 
+def _pack_tensors_for_broadcast(tensors: list[torch.Tensor]) -> torch.Tensor:
+    """Return a contiguous byte stream without copying a singleton tensor."""
+    if len(tensors) == 1:
+        return tensors[0]
+    return torch.cat(tensors, dim=0)
+
+
 def packed_broadcast_producer(
     iterator,
     group,
@@ -105,16 +112,19 @@ def packed_broadcast_producer(
                     packing_tensor_sizes[buffer_idx] += tensor.numel()
                     if packing_tensor_sizes[buffer_idx] > target_packed_tensor_size:
                         break
-                # Pack the tensors and call broadcast collective
-                packed_tensors[buffer_idx] = torch.cat(
-                    packing_tensor_list[buffer_idx], dim=0
+                # Avoid duplicating an oversized parameter just to broadcast it.
+                # Large embedding tensors can exceed the target buffer size on
+                # their own, and torch.cat([tensor]) otherwise needs a second
+                # allocation of the same size at the tightest refit-memory point.
+                packed_tensors[buffer_idx] = _pack_tensors_for_broadcast(
+                    packing_tensor_list[buffer_idx]
                 )
                 group.broadcast(packed_tensors[buffer_idx], src=src)
             except StopIteration:
                 # do the last broadcast if there are remaining tensors
                 if len(packing_tensor_list[buffer_idx]) > 0:
-                    packed_tensors[buffer_idx] = torch.cat(
-                        packing_tensor_list[buffer_idx], dim=0
+                    packed_tensors[buffer_idx] = _pack_tensors_for_broadcast(
+                        packing_tensor_list[buffer_idx]
                     )
                     group.broadcast(packed_tensors[buffer_idx], src=src)
                 break

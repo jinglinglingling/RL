@@ -303,7 +303,30 @@ def _broadcast_batched_data_dict(
     for entry in descriptor:
         key = entry[0]
         kind = entry[1]
-        if kind == "tensor":
+        if kind == "tensor" and torch.device(entry[4]).type != torch.device(
+            bcast_device
+        ).type:
+            dtype_str, shape, src_device = entry[2], entry[3], entry[4]
+            dtype = getattr(torch, dtype_str.split(".")[-1])
+            source = (
+                out[key].contiguous().reshape(-1) if is_leader else None
+            )
+            tensor = _broadcast_packed_wire(
+                source,
+                total_elements=torch.Size(shape).numel(),
+                dtype=dtype,
+                src_device=src_device,
+                bcast_device=bcast_device,
+                is_leader=is_leader,
+                src=src,
+                group=group,
+            )
+            if not is_leader:
+                assert tensor is not None
+                out[key] = tensor.view(shape)
+            del source
+            del tensor
+        elif kind == "tensor":
             dtype_str, shape, src_device = entry[2], entry[3], entry[4]
             dtype = getattr(torch, dtype_str.split(".")[-1])
             if is_leader:

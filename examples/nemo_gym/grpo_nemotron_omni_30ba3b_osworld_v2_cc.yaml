@@ -69,9 +69,14 @@ policy:
       truncate_history_thinking: false
   train_global_batch_size: ${mul:${grpo.num_prompts_per_step},${grpo.num_generations_per_prompt}}
   train_micro_batch_size: 1
+  # Exact-trace reconstruction can turn one logical rollout into many physical
+  # rows. Bound each worker fetch/materialization without splitting the
+  # optimizer step or the full-window advantage population.
+  train_max_physical_rows_per_dispatch: ${oc.decode:${oc.env:OSWORLD_TRAIN_MAX_PHYSICAL_ROWS_PER_DISPATCH,32}}
+  logprob_max_physical_rows_per_dispatch: ${oc.decode:${oc.env:OSWORLD_LOGPROB_MAX_PHYSICAL_ROWS_PER_DISPATCH,32}}
   logprob_batch_size: 1
   max_total_sequence_length: ${oc.decode:${oc.env:OSWORLD_MAX_MODEL_LEN,8192}}
-  logprob_chunk_size: null
+  logprob_chunk_size: ${oc.decode:${oc.env:OSWORLD_LOGPROB_CHUNK_SIZE,null}}
   make_sequence_length_divisible_by: 8
   router_replay:
     enabled: true

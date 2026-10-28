@@ -31,6 +31,50 @@ from nemo_rl.algorithms.loss.loss_input import prepare_loss_input
 from nemo_rl.distributed.batched_data_dict import BatchedDataDict
 
 
+def test_chunked_sampled_logprobs_match_unchunked_on_cpu(tmp_path):
+    from nemo_rl.distributed.model_utils import (
+        from_parallel_logits_to_logprobs_packed_sequences,
+    )
+
+    initialized_here = not torch.distributed.is_initialized()
+    if initialized_here:
+        torch.distributed.init_process_group(
+            "gloo", init_method=f"file://{tmp_path}/pg", rank=0, world_size=1
+        )
+    elif torch.distributed.get_backend() != "gloo":
+        pytest.skip("CPU equivalence test requires a Gloo process group")
+    try:
+        outputs = []
+        gradients = []
+        for chunk_size in (None, 1):
+            logits = torch.tensor(
+                [[[0.0, 0.0, -5.0], [0.0, -5.0, 0.0], [0.0, 0.0, 0.0]]],
+                requires_grad=True,
+            )
+            output = from_parallel_logits_to_logprobs_packed_sequences(
+                logits,
+                torch.tensor([[0, 2, 2]]),
+                (0, 3),
+                3,
+                vocab_start_index=0,
+                vocab_end_index=3,
+                group=torch.distributed.group.WORLD,
+                sampling_params=TrainingSamplingParams(top_k=2),
+                chunk_size=chunk_size,
+            )
+            torch.where(
+                torch.isfinite(output), output, torch.zeros_like(output)
+            ).sum().backward()
+            outputs.append(output.detach())
+            gradients.append(logits.grad.detach())
+
+        torch.testing.assert_close(outputs[0], outputs[1], rtol=0, atol=0)
+        torch.testing.assert_close(gradients[0], gradients[1], rtol=0, atol=0)
+    finally:
+        if initialized_here:
+            torch.distributed.destroy_process_group()
+
+
 @pytest.mark.parametrize("sequence_level", [False, True])
 @pytest.mark.parametrize("metrics_level", ["full", "minimal"])
 @pytest.mark.parametrize("invalid_source", ["current", "previous", "generation", "all"])

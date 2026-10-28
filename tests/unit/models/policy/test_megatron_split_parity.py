@@ -101,7 +101,12 @@ def _run_sync(policy: Policy, data: BatchedDataDict, loss_fn) -> list[dict]:
 
 
 def _run_split(
-    policy: Policy, data: BatchedDataDict, loss_fn, gbs: int, mbs: int
+    policy: Policy,
+    data: BatchedDataDict,
+    loss_fn,
+    gbs: int,
+    mbs: int,
+    dispatch_rows: int,
 ) -> list[dict]:
     """Drive the worker split API the way TQPolicy does, minus the TQ
     data plane: presharded begin/finish fan-out + replica-leader dedup +
@@ -123,24 +128,29 @@ def _run_split(
                 mbs=mbs,
             )
         )
-        sharded = policy._shard_for_train(data, gbs)
-        wg.get_all_worker_results(
-            wg.run_all_workers_sharded_data(
-                "train_microbatch",
-                data=sharded,
-                in_sharded_axes=["data_parallel"],
-                replicate_on_axes=[
-                    "context_parallel",
-                    "tensor_parallel",
-                    "pipeline_parallel",
-                ],
-                output_is_replicated=[
-                    "context_parallel",
-                    "tensor_parallel",
-                    "pipeline_parallel",
-                ],
+        assert dispatch_rows % policy.data_parallel_size == 0
+        for start in range(0, data.size, dispatch_rows):
+            partition = data.select_indices(
+                list(range(start, min(start + dispatch_rows, data.size)))
             )
-        )
+            sharded = partition.shard_by_batch_size(policy.data_parallel_size)
+            wg.get_all_worker_results(
+                wg.run_all_workers_sharded_data(
+                    "train_microbatch",
+                    data=sharded,
+                    in_sharded_axes=["data_parallel"],
+                    replicate_on_axes=[
+                        "context_parallel",
+                        "tensor_parallel",
+                        "pipeline_parallel",
+                    ],
+                    output_is_replicated=[
+                        "context_parallel",
+                        "tensor_parallel",
+                        "pipeline_parallel",
+                    ],
+                )
+            )
         finish_results = ray.get(
             wg.run_all_workers_single_data("finish_train_step_presharded")
         )
@@ -187,7 +197,14 @@ def test_split_train_matches_sync_train(tp, tiny_llama_model_path):
 
     policy, cluster, _ = _make_policy(tiny_llama_model_path, tp, f"parity-split-tp{tp}")
     try:
-        split_results = _run_split(policy, data, loss_fn, gbs=gbs, mbs=mbs)
+        split_results = _run_split(
+            policy,
+            data,
+            loss_fn,
+            gbs=gbs,
+            mbs=mbs,
+            dispatch_rows=gbs // 2,
+        )
     finally:
         policy.shutdown()
         cluster.shutdown()

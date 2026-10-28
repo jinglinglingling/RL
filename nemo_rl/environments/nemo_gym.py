@@ -1268,7 +1268,10 @@ Depending on your data shape, you may want to change these values."""
         # Optional Gym dependencies remain confined to the Gym adapter.
         from nemo_gym.token_id_capture.staging.records import RolloutManifest
 
-        from nemo_rl.environments.gym_selection import select_captured_calls
+        from nemo_rl.environments.gym_selection import (
+            AmbiguousCapturedCallsError,
+            select_captured_calls,
+        )
         from nemo_rl.experience.rollout_reassembler import (
             ActionOutputFlags,
             RolloutSelection,
@@ -1292,10 +1295,26 @@ Depending on your data shape, you may want to change these values."""
         # attempt is untrainable, not a controller failure. Keep pending IDs in
         # the receipt: their writes may still arrive and must not be cleaned here.
         capture_failed = bool(parsed.pending_call_ids or parsed.failures)
+        capture_failure_reason = "capture_incomplete"
+        env_failed_before_model = (
+            not capture_failed
+            and not parsed.records
+            and bool(
+                result.get("mask_sample")
+                or (result.get("instance_config") or {}).get("mask_sample")
+            )
+        )
         selected = []
-        if not capture_failed:
+        if not capture_failed and not env_failed_before_model:
             try:
                 selected = select_captured_calls(parsed.records, result)
+            except AmbiguousCapturedCallsError as error:
+                # Equal outputs from retries can make an otherwise complete
+                # manifest impossible to join without guessing identity. Mask
+                # only this rollout instead of aborting the controller.
+                capture_failed = True
+                capture_failure_reason = "capture_selection_ambiguous"
+                print(f"Rollout {owner!r} masked: {error}", flush=True)
             except ValueError as error:
                 raise ValueError(f"Rollout {owner!r}: {error}") from error
         if any(
@@ -1320,7 +1339,14 @@ Depending on your data shape, you may want to change these values."""
             reward=float(reward),
         )
         if capture_failed:
-            receipt.update(capture_poisoned=True, failure_reason="capture_incomplete")
+            receipt.update(
+                capture_poisoned=True, failure_reason=capture_failure_reason
+            )
+        elif env_failed_before_model:
+            receipt.update(
+                capture_poisoned=True,
+                failure_reason="environment_failed_before_model",
+            )
         elif any(
             r.response_status == "failed"
             or (
