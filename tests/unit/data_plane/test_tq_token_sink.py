@@ -532,12 +532,12 @@ def _example_admission(record, parent_coords=None):
     """The Gym admission for a fixture record; a child chains off its parent's coords."""
     if parent_coords is None:
         return nemo_gym.CaptureAdmission(
-            rollout_id=record.rollout_id,
+            capture_key=record.capture_key,
             model_call_id=record.model_call_id,
             mode="text",
         )
     return nemo_gym.CaptureAdmission(
-        rollout_id=record.rollout_id,
+        capture_key=record.capture_key,
         model_call_id=record.model_call_id,
         parent_call_id=record.parent_call_id,
         prev_len=record.prev_len,
@@ -735,7 +735,7 @@ def test_megatron_prompt_preparer_splices_resolved_prefix(
             TQTokenSink(tq_client, staging_partition=staging_partition)
         )
         root = nemo_gym.CaptureAdmission(
-            rollout_id="minf-r0", model_call_id="c1", mode="text"
+            capture_key="minf-r0", model_call_id="c1", mode="text"
         )
         root_result = stager.stage(
             "minf-response-1",
@@ -760,7 +760,7 @@ def test_megatron_prompt_preparer_splices_resolved_prefix(
         }
 
     admission = nemo_gym.CaptureAdmission(
-        rollout_id="minf-r0",
+        capture_key="minf-r0",
         model_call_id="c2",
         parent_call_id="c1",
         prev_len=4,
@@ -802,7 +802,7 @@ def test_megatron_stager_stamps_admission_epoch_when_request_spans_refit(
         TQTokenSink(tq_client, staging_partition=staging_partition)
     )
     admission = nemo_gym.CaptureAdmission(
-        rollout_id="minf-r0",
+        capture_key="minf-r0",
         model_call_id="c1",
         mode="text",
     )
@@ -850,7 +850,7 @@ def test_megatron_stager_poisons_malformed_payloads_with_capture_failed(
     }
     del fields[missing_field]
     admission = nemo_gym.CaptureAdmission(
-        rollout_id="minf-r0",
+        capture_key="minf-r0",
         model_call_id="c1",
         mode="text",
     )
@@ -888,7 +888,7 @@ def test_megatron_stager_declines_ineligible_requests(
         TQTokenSink(tq_client, staging_partition=staging_partition)
     )
     admission = nemo_gym.CaptureAdmission(
-        rollout_id="minf-r0",
+        capture_key="minf-r0",
         model_call_id="c1",
         mode="text",
     )
@@ -975,7 +975,7 @@ def test_megatron_preparer_resolves_chains_through_the_shared_cache():
     assert isinstance(preparer._chain_prefix, ChainPrefixCache)
 
     child = nemo_gym.CaptureAdmission(
-        rollout_id="r0",
+        capture_key="r0",
         model_call_id="c2",
         parent_call_id="c1",
         prev_len=2,
@@ -984,7 +984,7 @@ def test_megatron_preparer_resolves_chains_through_the_shared_cache():
         parent_chain_hash="a" * 64,
     )
     grandchild = nemo_gym.CaptureAdmission(
-        rollout_id="r0",
+        capture_key="r0",
         model_call_id="c3",
         parent_call_id="c2",
         prev_len=4,

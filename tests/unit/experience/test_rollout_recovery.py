@@ -226,7 +226,7 @@ def _sealed_attempt_state() -> dict[str, Any]:
             generation_index=0,
             gate_rollout_id=gate_id,
             receipt={
-                "rollout_id": gate_id,
+                "capture_key": gate_id,
                 "manifest": [{"staging_key": "g7/sibling-0/call-0"}],
             },
             reward=1.0,
@@ -282,7 +282,7 @@ def test_restore_rejects_malformed_attempt_fields(
     elif case == "receipt_manifest_type":
         attempt["receipt"]["manifest"] = None
     elif case == "receipt_identity":
-        attempt["receipt"]["rollout_id"] = "wrong"
+        attempt["receipt"]["capture_key"] = "wrong"
     elif case == "receipt_manifest":
         attempt["receipt"]["manifest"] = [{"staging_key": "wrong"}]
     elif case == "unsealed_payload":
@@ -756,7 +756,7 @@ def test_restart_preserves_sealed_sibling_and_retries_only_interrupted_one() -> 
             generation_index=0,
             gate_rollout_id=sealed_id,
             receipt={
-                "rollout_id": sealed_id,
+                "capture_key": sealed_id,
                 "manifest": [{"staging_key": "g7/sibling-0/call-0"}],
             },
             reward=1.0,
@@ -889,7 +889,7 @@ def test_missing_receipt_is_a_restart_safe_sealed_placeholder(
     receipts = [
         None,
         {
-            "rollout_id": gate_ids[1],
+            "capture_key": gate_ids[1],
             "manifest": [{"staging_key": f"{gate_ids[1]}/call"}],
         },
     ]
@@ -1015,7 +1015,7 @@ def test_prompt_group_restart_keeps_a_fully_sealed_group() -> None:
         results[generation_index] = SiblingSealResult(
             gate_rollout_id=gate_id,
             receipt={
-                "rollout_id": gate_id,
+                "capture_key": gate_id,
                 "manifest": [{"staging_key": f"g7/sibling-{generation_index}/call-0"}],
             },
             reward=1.0,
@@ -1059,7 +1059,7 @@ def test_prompt_group_seal_is_atomic() -> None:
         0: SiblingSealResult(
             gate_rollout_id=gate_id,
             receipt={
-                "rollout_id": gate_id,
+                "capture_key": gate_id,
                 "manifest": [{"staging_key": "g7/sibling-0/call-0"}],
             },
             reward=1.0,
@@ -1103,7 +1103,7 @@ def test_checkpoint_rejects_ambiguous_finalization_state(
             generation_index=0,
             gate_rollout_id=gate_id,
             receipt={
-                "rollout_id": gate_id,
+                "capture_key": gate_id,
                 "manifest": [{"staging_key": "g7/sibling-0/call-0"}],
             },
             reward=1.0,
@@ -1237,7 +1237,7 @@ def test_reward_checks_seals_and_survives_checkpoint(granularity):
     context = RewardLogContext("agent", '{"answer":"ok"}')
     result = SiblingSealResult(
         rollout_id,
-        {"rollout_id": rollout_id, "manifest": []},
+        {"capture_key": rollout_id, "manifest": []},
         -2.0,
         False,
         evidence,
@@ -1338,7 +1338,7 @@ def test_restore_rejects_malformed_reward_checks(raw_checks):
     rollout_id = group.gate_rollout_ids[0]
     result = SiblingSealResult(
         rollout_id,
-        {"rollout_id": rollout_id, "manifest": []},
+        {"capture_key": rollout_id, "manifest": []},
         1.0,
         False,
         RewardChecks(False, False, False),

@@ -839,7 +839,9 @@ Depending on your data shape, you may want to change these values."""
                 "lineage_store_kwargs": {"root": os.path.join(capture_dir, "lineage")},
                 "external_staging": True,
                 "external_staging_backend": _external_staging_backend(token_capture),
-                "framework_owned_context": self._context_compaction,
+                "parent_resolution": "source_history"
+                if self._context_compaction
+                else "fingerprint",
                 "control_auth_token_env": _TOKEN_CAPTURE_CONTROL_ENV,
             }
             # Gym resolves the credential inside each serving process. Keep
@@ -1289,7 +1291,7 @@ Depending on your data shape, you may want to change these values."""
             )
         manifest = await self._drained_manifest(owner)
         parsed = RolloutManifest.model_validate(manifest)
-        if parsed.rollout_id != owner:
+        if parsed.capture_key != owner:
             raise ValueError("Capture manifest belongs to another dispatched attempt")
         # A finished agent may have cancelled or lost its final model call. Its
         # attempt is untrainable, not a controller failure. Keep pending IDs in
@@ -1517,7 +1519,7 @@ Depending on your data shape, you may want to change these values."""
         elif terminal_record is None:
             failure_reason = selection_reason or "missing_terminal_row"
         return {
-            "rollout_id": rollout_id,
+            "capture_key": rollout_id,
             "reward": reward,
             "attempted_call_ids": manifest.get("attempted_call_ids", []),
             "pending_call_ids": manifest.get("pending_call_ids", []),

@@ -122,7 +122,7 @@ def finalize(finalizer, owners, *, execution_row_multiple=1, mask_sample=None):
         )
         receipts.append(
             dict(
-                rollout_id=chunks[-1]["scope"],
+                capture_key=chunks[-1]["scope"],
                 manifest=[record.model_dump() for record in manifest.records],
                 terminal_model_call_id=last,
                 terminal_selection="declared",
@@ -214,7 +214,7 @@ def test_lost_publication_ack_preserves_staging_and_exact_cleanup_plan(
     selected = capture_segment(harness, "attempt", child=True)
     manifest = selected["manifest"]
     receipt = dict(
-        rollout_id="attempt",
+        capture_key="attempt",
         manifest=[record.model_dump() for record in manifest.records],
         terminal_model_call_id=manifest.records[-1].model_call_id,
         terminal_selection="declared",
@@ -262,7 +262,7 @@ def test_unknown_capture_ack_is_not_cleanup_permission():
     from nemo_rl.experience.rollout_recovery import _receipt_staging_keys
 
     receipt = dict(
-        rollout_id="attempt",
+        capture_key="attempt",
         manifest=[],
         attempted_call_ids=["c1"],
         pending_call_ids=["c1"],
@@ -396,7 +396,7 @@ def test_gym_adapter_returns_one_real_receipt_and_rl_selection(monkeypatch, tmp_
         env._postprocess_receipt_mode({"_ng_rollout_id": "attempt"}, result)
     )
     assert env._control.await_count == 1
-    assert processed["receipt"]["rollout_id"] == "attempt"
+    assert processed["receipt"]["capture_key"] == "attempt"
     assert len(processed["receipt"]["manifest"]) == 2
     assert (
         processed["receipt"]["attempted_call_ids"]
@@ -460,7 +460,7 @@ def test_twenty_calls_have_one_trace_per_context(monkeypatch, tmp_path, compact_
         )
         assert [len(call.snapshot.token_ids_delta) for call in staged] == [3] * 20
         receipt = dict(
-            rollout_id="attempt",
+            capture_key="attempt",
             manifest=[record.model_dump() for record in records],
             terminal_model_call_id=records[-1].model_call_id,
             terminal_selection="declared",

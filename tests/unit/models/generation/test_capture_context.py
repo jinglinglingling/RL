@@ -103,7 +103,7 @@ def test_an_unproven_response_boundary_roots_a_new_segment():
 
 
 def test_ordinary_admission_is_unchanged():
-    admission = CaptureAdmission(rollout_id="a", model_call_id="c", mode="text")
+    admission = CaptureAdmission(capture_key="a", model_call_id="c", mode="text")
     decision = decide_capture_input(admission, messages=[])
     assert decision.storage is admission
     assert decision.serving is admission
