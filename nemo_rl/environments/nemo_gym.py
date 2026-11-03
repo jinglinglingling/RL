@@ -1272,6 +1272,7 @@ Depending on your data shape, you may want to change these values."""
 
         from nemo_rl.environments.gym_selection import (
             AmbiguousCapturedCallsError,
+            NoAcceptedCapturedGenerationsError,
             select_captured_calls,
         )
         from nemo_rl.experience.rollout_reassembler import (
@@ -1316,6 +1317,12 @@ Depending on your data shape, you may want to change these values."""
                 # only this rollout instead of aborting the controller.
                 capture_failed = True
                 capture_failure_reason = "capture_selection_ambiguous"
+                print(f"Rollout {owner!r} masked: {error}", flush=True)
+            except NoAcceptedCapturedGenerationsError as error:
+                # The agent ended before accepting any model call, e.g. every
+                # attempt of its first turn failed. Nothing here is trainable.
+                capture_failed = True
+                capture_failure_reason = "capture_no_accepted_generations"
                 print(f"Rollout {owner!r} masked: {error}", flush=True)
             except ValueError as error:
                 raise ValueError(f"Rollout {owner!r}: {error}") from error
@@ -1825,6 +1832,42 @@ output prompt token ids till seen: {output_item_dict["prompt_token_ids"][: len(s
                     "NeMo-Gym validation: synthesized token-free semantic "
                     f"message log with {len(nemo_rl_message_log) // 2} "
                     "assistant turn(s)",
+                    flush=True,
+                )
+            else:
+                # An evaluated episode with no assistant text (e.g. its task
+                # setup failed or every attempt of its first turn failed)
+                # still counts toward the metric with its environment reward;
+                # it must not abort the whole evaluation shard.
+                placeholder_ids = [tokenizer.eos_token_id]
+                nemo_rl_message_log.extend(
+                    [
+                        {
+                            "role": "user",
+                            "content": "",
+                            "token_ids": torch.empty(0, dtype=torch.long),
+                        },
+                        {
+                            "role": "assistant",
+                            "content": "",
+                            "token_ids": torch.tensor(
+                                placeholder_ids, dtype=torch.long
+                            ),
+                            "generation_logprobs": torch.zeros(
+                                len(placeholder_ids), dtype=torch.float32
+                            ),
+                            "is_invalid_tool_call": False,
+                            "has_malformed_thinking": False,
+                        },
+                    ]
+                )
+                output_types = [
+                    o.get("type") for o in nemo_gym_result["response"]["output"]
+                ]
+                print(
+                    "NeMo-Gym validation: episode returned no assistant "
+                    f"generation (output types {output_types}); scoring it "
+                    f"with reward {nemo_gym_result.get('reward')!r}",
                     flush=True,
                 )
 

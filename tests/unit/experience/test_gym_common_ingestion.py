@@ -427,6 +427,28 @@ def test_ambiguous_equal_captures_mask_only_the_rollout(
     assert result["logical_selection"].response_ids == ()
 
 
+def test_rollout_without_accepted_generations_masks_only_the_rollout(
+    captured: Any,  # noqa: F811
+) -> None:
+    captured.queue.append({"role": "assistant", "content": "x", "reasoning": None})
+    captured.harness.post("owner", [{"role": "user", "content": "task"}])
+
+    result = asyncio.run(
+        _env(captured.harness)._postprocess_receipt_mode(
+            {"_ng_rollout_id": "owner"},
+            {
+                "response": {"id": "export", "output": []},
+                "reward": 0.0,
+                "instance_config": {"mask_sample": True},
+            },
+        )
+    )
+
+    assert result["receipt"]["capture_poisoned"] is True
+    assert result["receipt"]["failure_reason"] == "capture_no_accepted_generations"
+    assert result["logical_selection"].response_ids == ()
+
+
 def test_environment_failure_before_first_model_call_is_masked(
     captured: Any,  # noqa: F811
 ) -> None:

@@ -30,6 +30,10 @@ class AmbiguousCapturedCallsError(ValueError):
     """Ordinary output is valid but cannot identify one captured call."""
 
 
+class NoAcceptedCapturedGenerationsError(ValueError):
+    """The returned trajectory accepted none of the captured calls."""
+
+
 def _output_items(
     result: dict[str, Any], *, captured_response_ids: set[str]
 ) -> tuple[list[dict[str, Any]], dict[int, str]]:
@@ -241,7 +245,7 @@ def select_captured_calls(
     else:
         selected = referenced
     if not selected:
-        raise ValueError("No accepted captured generations")
+        raise NoAcceptedCapturedGenerationsError("No accepted captured generations")
     positions = {r.model_call_id: i for i, r in enumerate(records)}
     indexes = [positions[r.model_call_id] for r in selected]
     if indexes != sorted(set(indexes)):
