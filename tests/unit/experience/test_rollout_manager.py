@@ -1064,10 +1064,15 @@ def test_receipt_completion_drops_mask_flag_when_gate_off():
     assert completion.env_extras["instance_config"]["other_key"] == "kept"
 
 
+@pytest.mark.parametrize("with_episode_end", [False, True])
 @pytest.mark.parametrize("log_full_result_tables", [False, True])
 def test_streamed_receipt_callback_uses_current_completion_conversion(
-    log_full_result_tables,
+    log_full_result_tables, with_episode_end
 ):
+    gym_result = _mask_gate_receipt_result()
+    if with_episode_end:
+        gym_result["full_result"]["episode_end_forced_fail"] = 1.0
+
     class _RunRolloutsRemote:
         def options(self, *, num_returns):
             assert num_returns == "streaming"
@@ -1080,7 +1085,7 @@ def test_streamed_receipt_callback_uses_current_completion_conversion(
                 return (
                     0,
                     {"name": "resolved-agent"},
-                    _mask_gate_receipt_result(),
+                    gym_result,
                     None,
                 )
 
@@ -1117,9 +1122,14 @@ def test_streamed_receipt_callback_uses_current_completion_conversion(
     assert "mask_sample" not in completion.env_extras["instance_config"]
     context = completion.env_extras["ng_reward_log_context"]
     assert context.agent_name == "resolved-agent"
-    assert (context.full_result_json is not None) is log_full_result_tables
     if log_full_result_tables:
-        assert "reward" not in json.loads(context.full_result_json)
+        logged = json.loads(context.full_result_json)
+        assert "reward" not in logged
+        assert ("episode_end_forced_fail" in logged) is with_episode_end
+    elif with_episode_end:
+        assert json.loads(context.full_result_json) == {"episode_end_forced_fail": 1.0}
+    else:
+        assert context.full_result_json is None
 
 
 @pytest.mark.parametrize("log_full_result_tables", [False, True])
