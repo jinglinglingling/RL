@@ -27,7 +27,7 @@ from nemo_rl.algorithms.loss import (
     NLLLossFn,
     prepare_loss_input,
 )
-from nemo_rl.algorithms.loss.interfaces import MetricNormalizer
+from nemo_rl.algorithms.loss.interfaces import LossType, MetricNormalizer
 from nemo_rl.algorithms.loss.loss_functions import CrossTokenizerDistillationLossFn
 from nemo_rl.algorithms.utils import calculate_kl, masked_mean
 from nemo_rl.algorithms.x_token.loss_utils import (
@@ -3282,6 +3282,67 @@ def test_prompt_mean_token_mean_is_prompt_and_microbatch_invariant():
     expected = -(((1.0 + 2.0 + 4.0) / 3.0 + 10.0) / 2.0)
     torch.testing.assert_close(whole, torch.tensor(expected))
     torch.testing.assert_close(split, whole)
+
+
+def test_seq_mean_token_mean_weights_rows_equally_and_is_microbatch_invariant():
+    token_mask = torch.tensor([[1.0, 1.0, 1.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0]])
+    advantages = torch.tensor([[1.0, 2.0, 3.0], [10.0, 0.0, 0.0], [4.0, 6.0, 0.0]])
+    data = _flash_loss_data(
+        token_mask=token_mask,
+        advantages=advantages,
+        generation_logprobs=torch.zeros_like(advantages),
+    )
+    loss_fn = ClippedPGLossFn(
+        ClippedPGLossConfig(
+            reference_policy_kl_penalty=0.0,
+            force_on_policy_ratio=True,
+            use_importance_sampling_correction=True,
+            truncated_importance_sampling_type="seq-mask-tis",
+            is_correction_gating="binary_kl",
+            truncated_importance_sampling_ratio_min=0.0,
+            truncated_importance_sampling_ratio=0.01,
+            loss_agg_mode="seq-mean-token-mean",
+            token_level_loss=False,
+        )
+    )
+    assert loss_fn.loss_type == LossType.SEQUENCE_LEVEL
+
+    def run(batch: BatchedDataDict) -> tuple[torch.Tensor, torch.Tensor]:
+        response_len = batch["advantages"].shape[1] - 1
+        curr = torch.zeros(batch.size, response_len, requires_grad=True)
+        loss, _ = loss_fn(
+            next_token_logprobs=curr,
+            data=batch,
+            global_valid_seqs=torch.tensor(3.0),
+            global_valid_toks=torch.tensor(6.0),
+        )
+        loss.backward()
+        return loss, curr.grad
+
+    first = BatchedDataDict({key: value[:1] for key, value in data.items()})
+    second = BatchedDataDict({key: value[1:] for key, value in data.items()})
+    whole, whole_grad = run(data)
+    split_first, grad_first = run(first)
+    split_second, grad_second = run(second)
+
+    # Per-row token means 2, 10, 5, each row weighted 1/3 regardless of length.
+    torch.testing.assert_close(whole, torch.tensor(-(2.0 + 10.0 + 5.0) / 3.0))
+    torch.testing.assert_close(split_first + split_second, whole)
+    torch.testing.assert_close(
+        whole_grad,
+        -advantages * token_mask / token_mask.sum(-1, keepdim=True) / 3.0,
+    )
+    torch.testing.assert_close(torch.cat([grad_first, grad_second]), whole_grad)
+
+
+def test_seq_mean_token_mean_requires_sequence_level_loss():
+    with pytest.raises(ValueError, match="token_level_loss=False"):
+        ClippedPGLossFn(
+            ClippedPGLossConfig(
+                force_on_policy_ratio=True,
+                loss_agg_mode="seq-mean-token-mean",
+            )
+        )
 
 
 def test_flash_divergence_gate_and_prompt_mode_validate_inputs():

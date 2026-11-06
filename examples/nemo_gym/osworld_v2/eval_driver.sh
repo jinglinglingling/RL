@@ -7,11 +7,11 @@ cd "$OSWORLD_RL_ROOT"
 
 case "${OSWORLD_EVAL_MODE:-}" in
   sft)
-    CONFIG=examples/nemo_gym/grpo_nemotron_omni_30ba3b_osworld_v2_inference_v1_parity.yaml
+    CONFIG="${OSWORLD_EVAL_CONFIG:-examples/nemo_gym/grpo_nemotron_omni_30ba3b_osworld_v2_inference_v1_parity.yaml}"
     ;;
   checkpoint)
     : "${OSWORLD_EVAL_CHECKPOINT_DIR:?}"
-    CONFIG=examples/nemo_gym/grpo_nemotron_omni_30ba3b_osworld_v2_checkpoint_inference_v1_parity.yaml
+    CONFIG="${OSWORLD_EVAL_CONFIG:-examples/nemo_gym/grpo_nemotron_omni_30ba3b_osworld_v2_checkpoint_inference_v1_parity.yaml}"
     ;;
   *)
     echo "OSWORLD_EVAL_MODE must be sft or checkpoint" >&2
@@ -20,6 +20,6 @@ case "${OSWORLD_EVAL_MODE:-}" in
 esac
 
 exec "$OSWORLD_DRIVER_PYTHON" \
-  examples/run_grpo.py \
+  examples/nemo_gym/run_grpo_nemo_gym.py \
   --config "$CONFIG" \
   "logger.log_dir=$OSWORLD_RUN_ROOT/exp_001"

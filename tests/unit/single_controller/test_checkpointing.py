@@ -2883,6 +2883,44 @@ class TestReplacementReservePersistence:
 
         assert list(actor._replacement_reserve) == ["spare0", "spare1"]
 
+    def test_restore_refreshes_spare_env_info_from_current_dataset(self, tmp_path):
+        """A spare pickled before the task configs moved must pick up the new rows."""
+        ckpt_dir = tmp_path / "resume_ckpt"
+        ckpt_dir.mkdir()
+        stale = {
+            "idx": 1,
+            "task_name": "train",
+            "extra_env_info": {"path": "/old/asset"},
+            "message_log": ["prompt"],
+        }
+        foreign = {
+            "idx": 0,
+            "task_name": "other",
+            "extra_env_info": {"path": "/keep"},
+        }
+        torch.save([stale, foreign, "spare"], ckpt_dir / "replacement_reserve.pt")
+        dataloader = _FakeDataloader()
+        dataloader.dataset = [
+            {"idx": 0, "task_name": "train", "extra_env_info": {"path": "/new0"}},
+            {"idx": 1, "task_name": "train", "extra_env_info": {"path": "/new/asset"}},
+        ]
+        mc = _actor_master_config(tmp_path, max_num_steps=0)
+
+        actor = _run_reserve_restore(
+            mc,
+            _make_actor_args(
+                last_checkpoint_path=str(ckpt_dir),
+                save_state=_matching_save_state(),
+                dataloader=dataloader,
+            ),
+        )
+
+        restored = list(actor._replacement_reserve)
+        assert restored[0]["extra_env_info"] == {"path": "/new/asset"}
+        assert restored[0]["message_log"] == ["prompt"]
+        assert restored[1]["extra_env_info"] == {"path": "/keep"}
+        assert restored[2] == "spare"
+
     def test_run_restores_the_pool_when_replay_metadata_is_absent(self, tmp_path):
         """An empty replay restore must not suppress the independent spare pool.
 

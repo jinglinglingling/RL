@@ -1,0 +1,12 @@
+# grpo_nemotron_omni_30ba3b_osworld_v2_rpga_agentenv_eval.yaml with model calls bounded
+# by the 3600 s rollout deadline. Without it a trajectory that fills max_model_len
+# keeps retrying past the deadline and the shard hits the 4 h Slurm limit.
+
+defaults: grpo_nemotron_omni_30ba3b_osworld_v2_rpga_agentenv_eval.yaml
+
+env:
+  nemo_gym:
+    nemotron_osworld:
+      responses_api_agents:
+        nemotron_osworld:
+          bound_model_calls_by_rollout_deadline: true

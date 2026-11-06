@@ -1,0 +1,23 @@
+# Yi's direct OSWorld evaluation budget on top of the RPGA R1-OTE contract:
+# vLLM max_model_len 64000 and 4096 generated tokens per model call.
+# Model calls are bounded by the 3600 s rollout deadline so a retried call
+# cannot keep a shard alive past it.
+
+defaults: grpo_nemotron_omni_30ba3b_osworld_v2_rpga_agentenv_eval.yaml
+
+policy:
+  generation:
+    max_new_tokens: 4096
+    vllm_cfg:
+      max_model_len: 64000
+
+data:
+  max_input_seq_length: 64000
+
+env:
+  nemo_gym:
+    nemotron_osworld:
+      responses_api_agents:
+        nemotron_osworld:
+          max_tokens: 4096
+          bound_model_calls_by_rollout_deadline: true

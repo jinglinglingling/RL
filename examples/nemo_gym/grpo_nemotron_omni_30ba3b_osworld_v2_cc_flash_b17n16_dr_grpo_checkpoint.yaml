@@ -1,5 +1,5 @@
-# Final non-AgentEnv target: B=17 prompts x N=16 owners = 272 logical
-# trajectories per optimizer step, strictly greater than 16x16.
+# AgentEnv target: B=17 prompts x N=16 owners = 272 logical trajectories per
+# optimizer step, strictly greater than 16x16.
 
 defaults: grpo_nemotron_omni_30ba3b_osworld_v2_cc_flash_b8n8_dr_grpo_checkpoint.yaml
 
@@ -9,18 +9,36 @@ grpo:
 
 policy:
   train_global_batch_size: 272
+  generation:
+    colocated:
+      resources:
+        # One policy node plus two generation nodes: three nodes total.
+        num_nodes: 2
+
+loss_fn:
+  # Qwen3-30B-A3B + R3 long-run setting selected for the target recipe.
+  truncated_importance_sampling_ratio: 0.001
 
 async_rl:
   min_groups_for_streaming_train: 17
   stage_full_advantage_window: true
-  # Logical batch size does not require 17 simultaneous prompt groups. Keep
-  # the already-qualified OpenSandbox concurrency until AgentEnv is attached.
-  max_inflight_prompts: 8
-  max_buffered_rollouts: 17
+  # AgentEnv can keep all prompt groups admitted while the environment-level
+  # semaphore bounds active sandboxes. This is needed to occupy two
+  # generation nodes during long GUI trajectories and stay below the cluster's
+  # idle-GPU reaper threshold.
+  max_inflight_prompts: 17
+  max_buffered_rollouts: 32
+
+cluster:
+  num_nodes: 3
 
 checkpointing:
   # Hold exactly one full optimizer window while publishing a checkpoint.
   enabled: true
+  # A full 30B policy+optimizer checkpoint is roughly 415 GiB. Retain only the
+  # newest atomically published checkpoint so each next tmp_step can fit within
+  # the shared Lustre project quota.
+  keep_top_k: 1
 
 logger:
   wandb:

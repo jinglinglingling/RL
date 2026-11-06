@@ -214,11 +214,17 @@ The validation set you pass in will directly be used for validation with no addi
         )
 
     if val_dataset is not None:
+        val_batch_size = config.grpo.val_batch_size
+        if val_batch_size is None:
+            val_batch_size = len(val_dataset)
+        if val_batch_size <= 0:
+            raise ValueError("`grpo.val_batch_size` must be positive")
         print(
-            f"Setting `grpo.max_val_samples` and `grpo.val_batch_size` to the length of the validation dataset, which is {len(val_dataset)}"
+            "Setting `grpo.max_val_samples` to the validation dataset length "
+            f"({len(val_dataset)}) and using `grpo.val_batch_size={val_batch_size}`"
         )
         config.grpo.max_val_samples = len(val_dataset)
-        config.grpo.val_batch_size = config.grpo.max_val_samples
+        config.grpo.val_batch_size = val_batch_size
 
     # Print config
     print("Final config:")

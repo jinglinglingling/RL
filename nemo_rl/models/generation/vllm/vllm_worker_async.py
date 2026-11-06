@@ -1258,8 +1258,43 @@ class VllmAsyncGenerationWorkerImpl(
                     },
                     status_code=400,
                 )
+            except ValueError as e:
+                # vLLM's get_max_tokens raises a plain ValueError ("Input length
+                # (N) exceeds model's maximum context length (M).") after
+                # preprocess_chat, e.g. when a token-in splice grows the prompt
+                # past max_model_len on a request with no max_tokens to clamp.
+                # Multimodal validation uses the equivalent phrase "maximum
+                # model length". Convert only those input overflows to the same
+                # 400; any other ValueError is a server bug and stays a 500.
+                message = str(e)
+                message_lower = message.lower()
+                is_context_overflow = "maximum context length" in message_lower or (
+                    "maximum model length" in message_lower
+                    and ("prompt" in message_lower or "tokens" in message_lower)
+                )
+                if not is_context_overflow:
+                    worker_self._abort_request_capture(request, reason="engine_error")
+                    LOGGER.exception("Unhandled vLLM ValueError in chat completion")
+                    raise
+                LOGGER.warning("Prompt exceeds max_model_len: %s", e)
+                worker_self._abort_request_capture(request, reason="context_length")
+                client_message = message
+                if "context length" not in message_lower:
+                    client_message = f"Prompt exceeds maximum context length: {message}"
+                return JSONResponse(
+                    content={
+                        "error": {
+                            "message": client_message,
+                            "type": "invalid_request_error",
+                            "param": "input_tokens",
+                            "code": 400,
+                        }
+                    },
+                    status_code=400,
+                )
             except BaseException:
                 worker_self._abort_request_capture(request, reason="engine_error")
+                LOGGER.exception("Unhandled vLLM chat-completion error")
                 raise
 
             if isinstance(generator, ErrorResponse):

@@ -135,6 +135,10 @@ class _LogicalRows:
     valid_owner_count: int
 
 
+class _InitialPromptEvidenceError(ValueError):
+    """A logical owner cannot prove the shared prompt used for grouping."""
+
+
 @dataclass
 class FinalizedGroup:
     """What ``finalize_group`` hands back for ``commit_finalized``."""
@@ -521,14 +525,52 @@ class RolloutReassembler:
                 for rollout_id, receipt, reward in zip(rollout_ids, receipts, rewards)
             ]
         else:
-            logical = self._finalize_logical_rows(
-                group_id,
-                rollout_ids,
-                logical_segments,
-                rewards,
-                mask_sample,
-                canonical_sample_ids=canonical_sample_ids,
-            )
+            try:
+                logical = self._finalize_logical_rows(
+                    group_id,
+                    rollout_ids,
+                    logical_segments,
+                    rewards,
+                    mask_sample,
+                    canonical_sample_ids=canonical_sample_ids,
+                )
+            except _InitialPromptEvidenceError as error:
+                # This is a known pre-publication structural outcome, not an
+                # indeterminate actor failure. Drop the complete prompt group so
+                # the controller can credit the slot short (or replace it)
+                # without terminating the whole async training run.
+                staging_keys = list(
+                    dict.fromkeys(
+                        record["staging_key"]
+                        for owner in logical_segments
+                        for segment in owner
+                        if isinstance(segment.receipt, dict)
+                        for record in (segment.receipt.get("manifest") or [])
+                        if isinstance(record, dict)
+                        and isinstance(record.get("staging_key"), str)
+                    )
+                )
+                self._clear_staging(staging_keys)
+                reason = str(error)
+                print(
+                    f"  finalize: group {group_id} dropped — {reason}",
+                    flush=True,
+                )
+                return FinalizedGroup(
+                    meta=None,
+                    group_min_wv=fallback_weight_version,
+                    group_max_wv=fallback_weight_version,
+                    staging_keys=[],
+                    metrics={
+                        "finalize/group_dropped": 1.0,
+                        "finalize/logical_owner_count": float(len(rollout_ids)),
+                        "finalize/valid_logical_owner_count": 0.0,
+                    },
+                    dropped=True,
+                    drop_reason=reason,
+                    valid_row_count=0,
+                    total_row_count=0,
+                )
             rows = logical.rows
             receipts = [
                 segment.receipt for owner in logical_segments for segment in owner
@@ -670,6 +712,34 @@ class RolloutReassembler:
         valid_rows = [row for row in rows if row.valid]
         real_row_count = len(rows)
         if logical is not None:
+            if real_row_count and all(mask_sample[:real_row_count]):
+                # A verifier infrastructure failure is transported as
+                # ``mask_sample=True``. When every logical row is masked, publishing
+                # the group would consume a prompt slot while contributing no
+                # training signal. Treat it as a known structural drop so the
+                # controller can replace the prompt (or explicitly credit the step
+                # short) instead of silently diluting the optimizer batch.
+                print(
+                    f"  finalize: group {group_id} dropped — every logical row "
+                    "is masked",
+                    flush=True,
+                )
+                self._clear_staging(staging_keys)
+                metrics["finalize/group_dropped"] = 1.0
+                metrics["finalize/all_rows_masked"] = 1.0
+                metrics["finalize/execution_padding_rows"] = 0.0
+                metrics["finalize/weight_version_span"] = 0.0
+                return FinalizedGroup(
+                    meta=None,
+                    group_min_wv=fallback_weight_version,
+                    group_max_wv=fallback_weight_version,
+                    staging_keys=[],
+                    metrics=metrics,
+                    dropped=True,
+                    drop_reason="every logical row is masked",
+                    valid_row_count=0,
+                    total_row_count=real_row_count,
+                )
             if not valid_rows:
                 # No verified owner means there is no trustworthy full input/media
                 # layout to borrow for the masked logical rows. This is a known
@@ -987,7 +1057,9 @@ class RolloutReassembler:
             )
         ):
             if not segments:
-                raise ValueError(f"{owner_id}: missing initial prompt evidence")
+                raise _InitialPromptEvidenceError(
+                    f"{owner_id}: missing initial prompt evidence"
+                )
             rebuilt = []
             parsed_receipts = []
             owner_valid = True
@@ -1055,7 +1127,9 @@ class RolloutReassembler:
                 else []
             )
             if len(roots) != 1:
-                raise ValueError(f"{owner_id}: missing initial prompt evidence")
+                raise _InitialPromptEvidenceError(
+                    f"{owner_id}: missing initial prompt evidence"
+                )
             if first.valid:
                 if first.model_call_ids[0] != roots[0].model_call_id:
                     raise ValueError(
@@ -1077,12 +1151,14 @@ class RolloutReassembler:
                     reward=reward,
                 )
                 if not root.valid:
-                    raise ValueError(
+                    raise _InitialPromptEvidenceError(
                         f"{owner_id}: unverifiable initial prompt evidence"
                     )
                 original_prompt = root.token_ids[: root.prompt_len]
             if not original_prompt:
-                raise ValueError(f"{owner_id}: empty initial grouping prompt")
+                raise _InitialPromptEvidenceError(
+                    f"{owner_id}: empty initial grouping prompt"
+                )
             if owner_valid:
                 prepared.valid_owner_count += 1
             else:

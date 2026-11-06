@@ -41,7 +41,7 @@ OSWORLD_DRIVER_SCRIPT="${OSWORLD_DRIVER_SCRIPT:-driver.sh}"
 OSWORLD_NUM_NODES="${OSWORLD_NUM_NODES:-4}"
 OSWORLD_RECIPE="${OSWORLD_RECIPE:-flash-b8n8-dr-grpo}"
 case "$OSWORLD_RECIPE" in
-  molt-b8n8-checkpoint|flash-b8n8-reinforce|flash-b8n8-dr-grpo|flash-b17n16-dr-grpo|flash-b17n16-reinforce) ;;
+  molt-b8n8-checkpoint|molt-b8n8-buffer32-checkpoint|flash-b8n8-reinforce|flash-b8n8-dr-grpo|flash-b17n16-dr-grpo|flash-b17n16-reinforce|yi-union2698-agentenv-flash-b32n4) ;;
   *)
     echo "Unsupported OSWORLD_RECIPE: $OSWORLD_RECIPE" >&2
     exit 2
@@ -76,6 +76,11 @@ case "$OSWORLD_SANDBOX_PROVIDER" in
     exit 2
     ;;
 esac
+if [[ "$OSWORLD_RECIPE" == "yi-union2698-agentenv-flash-b32n4" \
+  && "$OSWORLD_SANDBOX_PROVIDER" != "agentenv" ]]; then
+  echo "$OSWORLD_RECIPE requires OSWORLD_SANDBOX_PROVIDER=agentenv" >&2
+  exit 2
+fi
 
 required_vars=(
   CONTAINER
@@ -104,6 +109,15 @@ if [[ "$OSWORLD_DRIVER_SCRIPT" == "eval_driver.sh" ]]; then
   fi
 else
   required_vars+=(OSWORLD_GRPO_TRAIN_DATA)
+fi
+if [[ "$OSWORLD_RECIPE" == "yi-union2698-agentenv-flash-b32n4" ]]; then
+  required_vars+=(
+    OSWORLD_RLVR_SNAPSHOT
+    OSWORLD_CANONICAL_HARNESS_ROOT
+    OSWORLD_CANONICAL_AGENT_SHA256
+    OSWORLD_CANONICAL_FEEDBACK_SHA256
+    AGENTENV_TEMPLATE_WEIGHTS
+  )
 fi
 for name in "${required_vars[@]}"; do
   if [[ -z "${!name:-}" ]]; then
@@ -148,6 +162,11 @@ if [[ -n "${OSWORLD_RLVR_SNAPSHOT:-}" ]]; then
   export OSWORLD_RLVR_SNAPSHOT
   OSWORLD_RLVR_SNAPSHOT="$(canonical_dir "$OSWORLD_RLVR_SNAPSHOT")"
   test -s "$OSWORLD_RLVR_SNAPSHOT/SNAPSHOT.json"
+fi
+if [[ -n "${OSWORLD_RLVR_FUNCTIONS_ROOT:-}" ]]; then
+  export OSWORLD_RLVR_FUNCTIONS_ROOT
+  OSWORLD_RLVR_FUNCTIONS_ROOT="$(canonical_dir "$OSWORLD_RLVR_FUNCTIONS_ROOT")"
+elif [[ -n "${OSWORLD_RLVR_SNAPSHOT:-}" ]]; then
   test -d "$OSWORLD_RLVR_SNAPSHOT/tmp_funcs"
 fi
 if [[ "$OSWORLD_DRIVER_SCRIPT" == "eval_driver.sh" ]]; then
@@ -158,6 +177,36 @@ if [[ "$OSWORLD_DRIVER_SCRIPT" == "eval_driver.sh" && "${OSWORLD_EVAL_MODE:-}" =
   export OSWORLD_EVAL_CHECKPOINT_DIR
   OSWORLD_EVAL_CHECKPOINT_DIR="$(canonical_dir "$OSWORLD_EVAL_CHECKPOINT_DIR")"
 fi
+if [[ -n "${OSWORLD_EVALUATOR_TOOLS_ROOT:-}" ]]; then
+  export OSWORLD_EVALUATOR_TOOLS_ROOT
+  OSWORLD_EVALUATOR_TOOLS_ROOT="$(canonical_dir "$OSWORLD_EVALUATOR_TOOLS_ROOT")"
+  test -x "$OSWORLD_EVALUATOR_TOOLS_ROOT/usr/bin/ffprobe"
+  test -x "$OSWORLD_EVALUATOR_TOOLS_ROOT/usr/bin/ffmpeg"
+  test -x "$OSWORLD_EVALUATOR_TOOLS_ROOT/usr/bin/gimp-console"
+  test -x "$OSWORLD_EVALUATOR_TOOLS_ROOT/usr/bin/pdftotext"
+  test -x "$OSWORLD_EVALUATOR_TOOLS_ROOT/usr/bin/pdftoppm"
+  test -x "$OSWORLD_EVALUATOR_TOOLS_ROOT/usr/lib/libreoffice/program/soffice"
+  test -d "$OSWORLD_EVALUATOR_TOOLS_ROOT/runtime-libs"
+  test -d "$OSWORLD_EVALUATOR_TOOLS_ROOT/etc/libreoffice"
+fi
+if [[ -n "${OSWORLD_EVALUATOR_REGISTRY_ROOT:-}" ]]; then
+  export OSWORLD_EVALUATOR_REGISTRY_ROOT
+  OSWORLD_EVALUATOR_REGISTRY_ROOT="$(canonical_dir "$OSWORLD_EVALUATOR_REGISTRY_ROOT")"
+  test -r "$OSWORLD_EVALUATOR_REGISTRY_ROOT/metrics/verigen/__init__.py"
+  test -r "$OSWORLD_EVALUATOR_REGISTRY_ROOT/getters/verigen/__init__.py"
+fi
+if [[ -n "${OSWORLD_CANONICAL_HARNESS_ROOT:-}" ]]; then
+  export OSWORLD_CANONICAL_HARNESS_ROOT
+  OSWORLD_CANONICAL_HARNESS_ROOT="$(canonical_dir "$OSWORLD_CANONICAL_HARNESS_ROOT")"
+  canonical_agent="$OSWORLD_CANONICAL_HARNESS_ROOT/mm_agents/nvidia/nemotron_agent.py"
+  canonical_feedback="$OSWORLD_CANONICAL_HARNESS_ROOT/desktop_env/execution_feedback.py"
+  test -r "$canonical_agent"
+  test -r "$canonical_feedback"
+  : "${OSWORLD_CANONICAL_AGENT_SHA256:?}"
+  : "${OSWORLD_CANONICAL_FEEDBACK_SHA256:?}"
+  printf '%s  %s\n' "$OSWORLD_CANONICAL_AGENT_SHA256" "$canonical_agent" | sha256sum --check
+  printf '%s  %s\n' "$OSWORLD_CANONICAL_FEEDBACK_SHA256" "$canonical_feedback" | sha256sum --check
+fi
 
 test -r "$NANO_OMNI_MODEL_NAME/config.json"
 if [[ "$OSWORLD_DRIVER_SCRIPT" != "eval_driver.sh" ]]; then
@@ -166,7 +215,11 @@ fi
 test -r "$RAY_SUB"
 
 OSWORLD_CHAIN_LENGTH="${OSWORLD_CHAIN_LENGTH:-1}"
-OSWORLD_GRPO_MAX_STEPS="${OSWORLD_GRPO_MAX_STEPS:-300}"
+if [[ "$OSWORLD_RECIPE" == "yi-union2698-agentenv-flash-b32n4" ]]; then
+  OSWORLD_GRPO_MAX_STEPS="${OSWORLD_GRPO_MAX_STEPS:-100}"
+else
+  OSWORLD_GRPO_MAX_STEPS="${OSWORLD_GRPO_MAX_STEPS:-300}"
+fi
 if ! [[ "$OSWORLD_CHAIN_LENGTH" =~ ^[1-9][0-9]*$ ]]; then
   echo "OSWORLD_CHAIN_LENGTH must be a positive integer" >&2
   exit 2
@@ -189,6 +242,12 @@ case "$OSWORLD_CHAIN_DEPENDENCY" in
     exit 2
     ;;
 esac
+OSWORLD_INITIAL_DEPENDENCY_JOB_IDS="${OSWORLD_INITIAL_DEPENDENCY_JOB_IDS:-}"
+if [[ -n "$OSWORLD_INITIAL_DEPENDENCY_JOB_IDS" ]] \
+  && [[ ! "$OSWORLD_INITIAL_DEPENDENCY_JOB_IDS" =~ ^[0-9]+(:[0-9]+)*$ ]]; then
+  echo "OSWORLD_INITIAL_DEPENDENCY_JOB_IDS must be colon-separated numeric Slurm job IDs" >&2
+  exit 2
+fi
 
 mkdir -p "$OSWORLD_RESULTS_ROOT"
 OSWORLD_RESULTS_ROOT="$(readlink -f "$OSWORLD_RESULTS_ROOT")"
@@ -204,6 +263,29 @@ series_root="${OSWORLD_SERIES_ROOT:-$OSWORLD_RESULTS_ROOT/$run_name}"
 mkdir -p "$series_root/segments"
 series_root="$(readlink -f "$series_root")"
 export OSWORLD_SERIES_ROOT="$series_root"
+export OSWORLD_RUN_NAME="$run_name"
+export OSWORLD_WANDB_ENABLED="${OSWORLD_WANDB_ENABLED:-true}"
+export OSWORLD_WANDB_PROJECT="${OSWORLD_WANDB_PROJECT:-osworld-rl}"
+export OSWORLD_WANDB_NAME="${OSWORLD_WANDB_NAME:-$run_name}"
+if [[ "$OSWORLD_WANDB_ENABLED" == "true" ]]; then
+  if [[ -z "${WANDB_API_KEY:-}" ]]; then
+    export WANDB_API_KEY
+    WANDB_API_KEY="$(
+      python3 - "${NETRC:-$HOME/.netrc}" <<'PY'
+import netrc
+import sys
+
+credentials = netrc.netrc(sys.argv[1]).authenticators("api.wandb.ai")
+if credentials is None or not credentials[2]:
+    raise SystemExit("No api.wandb.ai password found in the configured netrc")
+print(credentials[2], end="")
+PY
+    )"
+  fi
+  : "${WANDB_API_KEY:?W&B is enabled but no API key is available}"
+  export WANDB_RUN_ID="${OSWORLD_WANDB_RUN_ID:-$(printf '%s' "$series_root" | sha256sum | cut -c1-16)}"
+  export WANDB_RESUME="${WANDB_RESUME:-allow}"
+fi
 
 checkpoint_dir="${OSWORLD_CHECKPOINT_DIR:-$series_root/checkpoints}"
 cache_root="${OSWORLD_CACHE_ROOT:-$OSWORLD_RESULTS_ROOT/.cache}"
@@ -306,6 +388,12 @@ fi
 if [[ -n "${OSWORLD_RLVR_SNAPSHOT:-}" ]]; then
   add_identity_mount "$OSWORLD_RLVR_SNAPSHOT"
 fi
+if [[ -n "${OSWORLD_RLVR_FUNCTIONS_ROOT:-}" ]]; then
+  add_identity_mount "$OSWORLD_RLVR_FUNCTIONS_ROOT"
+fi
+if [[ -n "${OSWORLD_RLVR_ASSET_ROOT:-}" ]]; then
+  add_identity_mount "$OSWORLD_RLVR_ASSET_ROOT"
+fi
 if [[ "$OSWORLD_DRIVER_SCRIPT" == "eval_driver.sh" ]]; then
   add_identity_mount "$OSWORLD_GRPO_VAL_DATA"
 fi
@@ -317,14 +405,44 @@ add_identity_mount "$OSWORLD_CHECKPOINT_DIR"
 add_identity_mount "$OSWORLD_CACHE_ROOT"
 add_identity_mount "$OSWORLD_RUNTIME_LIB_DIR"
 add_identity_mount "$OSWORLD_GYM_VENV_DIR"
+if [[ -n "${OSWORLD_EVALUATOR_TOOLS_ROOT:-}" ]]; then
+  add_identity_mount "$OSWORLD_EVALUATOR_TOOLS_ROOT"
+  mount_specs+=(
+    "$OSWORLD_EVALUATOR_TOOLS_ROOT/usr/lib/libreoffice:/usr/lib/libreoffice"
+    "$OSWORLD_EVALUATOR_TOOLS_ROOT/etc/libreoffice:/etc/libreoffice"
+    "$OSWORLD_EVALUATOR_TOOLS_ROOT/var/lib/libreoffice:/var/lib/libreoffice"
+    "$OSWORLD_EVALUATOR_TOOLS_ROOT/var/spool/libreoffice:/var/spool/libreoffice"
+    "$OSWORLD_EVALUATOR_TOOLS_ROOT/etc/fonts:/etc/fonts"
+    "$OSWORLD_EVALUATOR_TOOLS_ROOT/usr/share/fonts:/usr/share/fonts"
+    "$OSWORLD_EVALUATOR_TOOLS_ROOT/usr/share/fontconfig:/usr/share/fontconfig"
+    "$OSWORLD_EVALUATOR_TOOLS_ROOT/usr/share/X11:/usr/share/X11"
+    "$OSWORLD_EVALUATOR_TOOLS_ROOT/etc/X11:/etc/X11"
+    "$RL_ROOT/examples/nemo_gym/osworld_v2/evaluator_tools/bin/python3:/usr/bin/python3"
+    "$RL_ROOT/examples/nemo_gym/osworld_v2/evaluator_tools/bin/evaluator-tool:/usr/bin/gimp-console"
+  )
+  if [[ -d "$OSWORLD_EVALUATOR_TOOLS_ROOT/usr/lib/thunderbird" ]]; then
+    mount_specs+=("$OSWORLD_EVALUATOR_TOOLS_ROOT/usr/lib/thunderbird:/usr/lib/thunderbird")
+  fi
+fi
+if [[ -n "${OSWORLD_EVALUATOR_REGISTRY_ROOT:-}" ]]; then
+  add_identity_mount "$OSWORLD_EVALUATOR_REGISTRY_ROOT"
+fi
+if [[ -n "${OSWORLD_CANONICAL_HARNESS_ROOT:-}" ]]; then
+  add_identity_mount "$OSWORLD_CANONICAL_HARNESS_ROOT"
+fi
 if [[ -n "${OSWORLD_HF_HOME:-}" ]]; then
   mkdir -p "$OSWORLD_HF_HOME"
   export OSWORLD_HF_HOME="$(readlink -f "$OSWORLD_HF_HOME")"
   add_identity_mount "$OSWORLD_HF_HOME"
 fi
+# oci-nrt-slurm-1 mounts the cs-001 Lustre at /scratch/fsw; Gym venvs and train.jsonl embed /lustre/fs1 paths.
+if [[ ! -e /lustre/fs1 && -d /scratch/fsw ]]; then
+  mount_specs+=("/scratch/fsw:/lustre/fs1")
+fi
 
 export MOUNTS
 MOUNTS="$(IFS=,; echo "${mount_specs[*]}")"
+export CONTAINER_WORKDIR="${CONTAINER_WORKDIR:-/opt/nemo-rl}"
 export GPUS_PER_NODE=8
 export NUM_NODES="$OSWORLD_NUM_NODES"
 export OSWORLD_EXECUTION_ROOT=/opt/nemo-rl/examples/nemo_gym/osworld_v2
@@ -339,9 +457,14 @@ case "$OSWORLD_RECIPE" in
   *) default_osworld_max_steps=150 ;;
 esac
 export OSWORLD_MAX_STEPS="${OSWORLD_MAX_STEPS:-$default_osworld_max_steps}"
-export OSWORLD_MAX_PARALLEL_ROLLOUTS="${OSWORLD_MAX_PARALLEL_ROLLOUTS:-8}"
+if [[ "$OSWORLD_RECIPE" == "yi-union2698-agentenv-flash-b32n4" ]]; then
+  export OSWORLD_MAX_PARALLEL_ROLLOUTS="${OSWORLD_MAX_PARALLEL_ROLLOUTS:-80}"
+  export OSWORLD_SEED="${OSWORLD_SEED:-43}"
+else
+  export OSWORLD_MAX_PARALLEL_ROLLOUTS="${OSWORLD_MAX_PARALLEL_ROLLOUTS:-8}"
+  export OSWORLD_SEED="${OSWORLD_SEED:-42}"
+fi
 export OSWORLD_CHECKPOINT_MUST_SAVE_BY="${OSWORLD_CHECKPOINT_MUST_SAVE_BY:-00:03:40:00}"
-export OSWORLD_SEED="${OSWORLD_SEED:-42}"
 
 exclude_args=()
 if [[ -n "${OSWORLD_EXCLUDE_NODES:-}" ]]; then
@@ -367,7 +490,7 @@ while [[ -e "$series_root/segments/segment-$(printf '%03d' "$next_segment")" ]];
   next_segment=$((next_segment + 1))
 done
 
-previous_job=""
+previous_job="$OSWORLD_INITIAL_DEPENDENCY_JOB_IDS"
 submission_manifest="$series_root/submissions.tsv"
 if [[ ! -e "$submission_manifest" ]]; then
   printf 'segment\tjob_id\tdependency\tlog_dir\n' > "$submission_manifest"

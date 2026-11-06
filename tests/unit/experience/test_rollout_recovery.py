@@ -153,6 +153,64 @@ def test_ledger_round_trip_preserves_group_ownership() -> None:
     assert restored.get_group("g7").phase is PromptGroupPhase.ADMITTED
 
 
+@pytest.mark.parametrize(("saved_generations", "resumed_generations"), [(4, 2), (2, 4)])
+def test_generation_count_change_regenerates_restored_group(
+    saved_generations: int,
+    resumed_generations: int,
+) -> None:
+    ledger = RolloutRecoveryLedger()
+    group = _reserve(
+        ledger,
+        group_id="g7",
+        admission_id="batch-7",
+        prompt_id="7",
+        prompt_payload=_prompt(),
+        expected_generations=saved_generations,
+        target_step=7,
+        start_weight_version=6,
+        task_source=None,
+        recovery_granularity=RecoveryGranularity.SIBLING,
+        admitted=True,
+    )
+    _mutate(lambda cut: ledger.mark_group_dispatched(cut, "g7"))
+    first_gate_id = group.gate_rollout_id(0)
+    _mutate(
+        lambda cut: ledger.mark_sibling_sealed(
+            cut,
+            "g7",
+            generation_index=0,
+            gate_rollout_id=first_gate_id,
+            receipt={
+                "rollout_id": first_gate_id,
+                "manifest": [{"staging_key": "g7/sibling-0/call-0"}],
+            },
+            reward=1.0,
+            mask_sample=False,
+        )
+    )
+
+    restored = RolloutRecoveryLedger.from_state_dict(ledger.state_dict())
+    resized = _mutate(
+        lambda cut: restored.resize_groups_for_generation_count(
+            cut, resumed_generations
+        )
+    )
+    _mutate(lambda cut: restored.prepare_for_restart(cut))
+    retry = _mutate(lambda cut: restored.prepare_incomplete_retry(cut, "g7"))
+
+    assert resized == 1
+    assert retry.expected_generations == resumed_generations
+    assert [sibling.generation_index for sibling in retry.siblings] == list(
+        range(resumed_generations)
+    )
+    assert all(
+        sibling.current_attempt.status is RolloutAttemptStatus.RESERVED
+        for sibling in retry.siblings
+    )
+    assert retry.gate_rollout_ids[0] != first_gate_id
+    assert restored.expected_staging_keys() == set()
+
+
 def test_serialized_state_fields_match_recovery_dataclasses() -> None:
     """Require every durable dataclass field to be classified explicitly."""
     assert _PROMPT_REF_STATE_FIELDS == {

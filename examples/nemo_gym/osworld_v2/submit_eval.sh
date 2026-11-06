@@ -34,7 +34,7 @@ esac
 
 export OSWORLD_DRIVER_SCRIPT=eval_driver.sh
 export OSWORLD_NUM_NODES=1
-export OSWORLD_JOB_NAME=osw-v2-eval
+export OSWORLD_JOB_NAME="${OSWORLD_JOB_NAME:-osw-v2-eval}"
 export OSWORLD_RUN_PREFIX="osworld-v2-${OSWORLD_EVAL_MODE}-eval"
 if (( $# == 3 )); then
   export OSWORLD_GRPO_VAL_DATA_OVERRIDE="$3"

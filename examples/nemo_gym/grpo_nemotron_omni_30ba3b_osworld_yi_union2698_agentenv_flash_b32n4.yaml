@@ -1,0 +1,211 @@
+# Yi-aligned AgentEnv data/harness with FlashREINFORCE on NeMo RL Megatron.
+# B=32 prompts x N=4 same-state forks = 128 trajectories per optimizer step.
+# Align Yi's task/data/evaluator assets, AgentEnv lifecycle and templates, model-visible
+# observation/feedback semantics, and K8/S3 context policy. Preserve NeMo Gym's native
+# Responses history/lineage and NeMo RL's Megatron, async rollout, loss, and checkpoint stack.
+
+defaults: grpo_nemotron_omni_30ba3b_osworld_v2_cc_molt_b8k8_checkpoint.yaml
+
+grpo:
+  num_prompts_per_step: 32
+  num_generations_per_prompt: 4
+  max_num_epochs: 200
+  max_num_steps: 100
+  seed: 43
+  baseline_population: all_owners
+  adv_estimator:
+    # Direct prompt-group mean baseline; no standard-deviation normalization.
+    name: dr_grpo
+
+loss_fn:
+  reference_policy_kl_penalty: 0.0
+  use_kl_in_reward: false
+  token_level_loss: true
+  loss_agg_mode: token-mean
+  sequence_level_importance_ratios: false
+  use_importance_sampling_correction: true
+  actor_importance_sampling_ratio_min: 0.0
+  actor_importance_sampling_ratio_max: 1.0e9
+  truncated_importance_sampling_type: seq-mask-tis
+  is_correction_gating: binary_kl
+  truncated_importance_sampling_ratio_min: 0.0
+  truncated_importance_sampling_ratio: 0.01
+  force_on_policy_ratio: true
+  disable_ppo_ratio: false
+  use_cispo: false
+  use_on_policy_kl_approximation: false
+  ratio_clip_c: null
+  positive_example_nll_weight: 0.0
+
+policy:
+  train_global_batch_size: 128
+  train_micro_batch_size: 1
+  logprob_batch_size: 1
+  # Match Yi's bounded fp32 logits conversion. Their current MOLT implementation
+  # uses 256 after observing that 1024 can OOM once optimizer state and activations
+  # are resident on 80GB H100s.
+  logprob_chunk_size: 256
+  max_total_sequence_length: 49152
+  make_sequence_length_divisible_by: 32
+  max_grad_norm: 1.0
+  offload_optimizer_for_logprob: true
+  sequence_packing:
+    enabled: true
+    train_mb_tokens: 49152
+    logprob_mb_tokens: 49152
+  dynamic_batching:
+    enabled: false
+  megatron_cfg:
+    activation_checkpointing: true
+    optimizer:
+      lr: 5.0e-6
+      min_lr: 5.0e-6
+      weight_decay: 0.0
+      adam_eps: 1.0e-8
+      clip_grad: 1.0
+      optimizer_cpu_offload: true
+      # Keep 40% of distributed optimizer state on GPU. Higher CPU offload
+      # exceeds the policy node's host-RAM limit at first-microbatch broadcast.
+      optimizer_offload_fraction: 0.6
+    scheduler:
+      lr_warmup_iters: 0
+      lr_warmup_init: 5.0e-6
+      lr_decay_iters: 1000
+      lr_decay_style: constant
+      start_weight_decay: 0.0
+      end_weight_decay: 0.0
+      weight_decay_incr_style: constant
+  generation:
+    max_new_tokens: 8192
+    temperature: 1.0
+    top_p: 1.0
+    vllm_cfg:
+      max_model_len: 49152
+    vllm_kwargs:
+      limit_mm_per_prompt: {image: 11}
+      max_num_batched_tokens: 49152
+    colocated:
+      enabled: false
+      resources:
+        gpus_per_node: 8
+        num_nodes: 3
+
+data:
+  max_input_seq_length: 49152
+  shuffle: true
+  train:
+    data_path: ${oc.env:OSWORLD_GRPO_TRAIN_DATA}
+
+env:
+  # This recipe changes the inherited recency policy into RFC0040 K/S. Replace
+  # the complete environment section so OmegaConf cannot merge the parent's
+  # `policy.config.images` into the type-specific K/S configuration.
+  _override_: true
+  should_use_nemo_gym: true
+  should_log_nemo_gym_responses: false
+  should_mask_flagged_samples: true
+  nemo_gym:
+    is_trajectory_collection: false
+    skip_venv_if_present: true
+    config_paths:
+      - responses_api_models/vllm_model/configs/vllm_model.yaml
+      - responses_api_agents/nemotron_osworld/configs/nemotron_osworld_rfc0040_k8s.yaml
+      - resources_servers/osworld/configs/osworld.yaml
+      - ${oc.env:OSWORLD_SANDBOX_CONFIG,resources_servers/osworld/configs/opensandbox_osworld.yaml}
+    policy_model:
+      responses_api_models:
+        vllm_model:
+          return_token_id_information: false
+    model_endpoint_readiness_timeout_seconds: ${oc.decode:${oc.env:OSWORLD_MODEL_ENDPOINT_READINESS_TIMEOUT_SECONDS,2700}}
+    nemotron_osworld:
+      responses_api_agents:
+        nemotron_osworld:
+          canonical_harness_root: ${oc.env:OSWORLD_CANONICAL_HARNESS_ROOT}
+          canonical_agent_sha256: ${oc.env:OSWORLD_CANONICAL_AGENT_SHA256}
+          canonical_feedback_sha256: ${oc.env:OSWORLD_CANONICAL_FEEDBACK_SHA256}
+          prompt_format_variant: rfc0015_v1
+          prompt_mode: hf_tools
+          execution_feedback: true
+          max_steps: 200
+          rollout_timeout_s: 3600
+          action_timeout_s: 60
+          llm_timeout_s: 900
+          max_parallel_rollouts: ${oc.decode:${oc.env:OSWORLD_MAX_PARALLEL_ROLLOUTS,80}}
+          temperature: 1.0
+          top_p: 1.0
+          max_tokens: 8192
+          max_image_history_length: 3
+          image_block_k: 8
+          image_boundary_s: 3
+          sleep_after_execution_s: 3.0
+          context_history:
+            enabled: true
+            policy:
+              type: rfc0040_k_s
+              config:
+                block_k: 8
+                boundary_s: 3
+                omission_marker: "[Image omitted for text cleaning]"
+            schedule:
+              type: rolling_recency
+              actions_per_chunk: 1
+            guards:
+              max_total_tokens: 49152
+              reserved_generation_tokens: 8192
+              max_active_images: 11
+            max_model_calls: 200
+            max_segments: 200
+            max_response_retries: 0
+
+async_rl:
+  sampler:
+    # Keep generation in the current policy version while admitting all 32
+    # AgentEnv groups concurrently.
+    name: in_order
+    max_lookahead_versions: 0
+    warmup_lookahead_versions: null
+  # Dr.GRPO's baseline is local to each complete N=4 prompt group. Stream one
+  # group at a time from TQ into the open gradient-accumulation step, then take
+  # exactly one optimizer step after all 32 groups. Fetching the full 128-row
+  # window at once exceeded the single policy node's host-RAM limit.
+  min_groups_for_streaming_train: 1
+  stage_full_advantage_window: false
+  # The inherited Molt recipe enables periodic probes only for full-window
+  # staging. This recipe trains directly once all 32 prompt groups arrive.
+  staged_policy_probe_interval_s: null
+  max_inflight_prompts: 32
+  max_buffered_rollouts: 32
+  rollout_failure:
+    max_infra_attempts_per_prompt: 8
+    max_data_attempts_per_prompt: 1
+    max_skipped_prompts: 0
+    max_consecutive_dropped_prompts: 0
+    min_step_batch_fraction: 1
+    # Keep the configured B32 gradient estimate when a structurally empty group
+    # (for example, every logical row masked) cannot be trained.
+    on_dropped_prompt: replace
+    max_replacement_attempts: 1
+    replacement_reserve_prompts: 1
+    nemo_gym:
+      max_row_attempts: 8
+
+checkpointing:
+  enabled: true
+  save_period: 2
+  keep_top_k: 1
+  save_optimizer: true
+  save_data_plane: true
+  quiesce_rollouts_for_checkpoint: true
+
+logger:
+  log_dir: ${oc.env:OSWORLD_RESULTS_DIR,logs/osworld-yi-union2698-agentenv-flash-b32n4}
+  wandb_enabled: true
+  tensorboard_enabled: true
+  wandb:
+    project: nemo-rl-osworld
+    name: osworld-yi-union2698-agentenv-flash-b32n4
+
+cluster:
+  gpus_per_node: 8
+  # One TP1 x CP8 x DP1 policy node plus three generation nodes.
+  num_nodes: 4

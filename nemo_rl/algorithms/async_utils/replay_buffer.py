@@ -40,6 +40,10 @@ import ray
 import torch
 
 from nemo_rl.algorithms.async_utils.interfaces import ReplayBufferProtocol
+from nemo_rl.algorithms.single_controller_utils.logical_advantage import (
+    has_logical_owners,
+    validate_logical_owner_metadata,
+)
 from nemo_rl.data_plane import KVBatchMeta
 from nemo_rl.data_plane.async_utils import call_data_plane
 from nemo_rl.data_plane.schema import (
@@ -1696,9 +1700,10 @@ class TQReplayBuffer:
                 never exceeds it.
             expected_partition_id: Partition this buffer writes to; must
                 match the envelope.
-            expected_group_size: num_generations_per_prompt; every group must
-                hold exactly this many rows (a changed group size silently
-                breaks the group-relative baseline).
+            expected_group_size: num_generations_per_prompt. Ordinary groups
+                must hold exactly this many rows. Context-compacted groups may
+                hold a variable number of physical rows, but their tags must
+                encode exactly this many complete logical owners.
             expected_manifest_digest: Digest returned by the matching native
                 TQ checkpoint load. It must match the replay metadata file.
 
@@ -1774,13 +1779,26 @@ class TQReplayBuffer:
             num_lengths = (
                 len(meta.sequence_lengths) if meta.sequence_lengths is not None else -1
             )
-            if not (
-                len(meta.sample_ids) == num_tags == num_lengths == expected_group_size
-            ):
+            if not len(meta.sample_ids) == num_tags == num_lengths:
                 raise ValueError(
                     "Replay buffer checkpoint group misaligned: "
                     f"sample_ids={len(meta.sample_ids)}, tags={num_tags}, "
-                    f"sequence_lengths={num_lengths}, "
+                    f"sequence_lengths={num_lengths}"
+                )
+            if has_logical_owners(meta):
+                dispatch_group_ids = validate_logical_owner_metadata(
+                    meta, expected_group_size=expected_group_size
+                )
+                if dispatch_group_ids != {group["group_id"]}:
+                    raise ValueError(
+                        "Replay buffer checkpoint CC dispatch_group_id mismatch: "
+                        f"tags={sorted(dispatch_group_ids)!r}, "
+                        f"record={group['group_id']!r}"
+                    )
+            elif len(meta.sample_ids) != expected_group_size:
+                raise ValueError(
+                    "Replay buffer checkpoint group has wrong row count: "
+                    f"rows={len(meta.sample_ids)}, "
                     f"expected_group_size={expected_group_size}"
                 )
             for sid in meta.sample_ids:

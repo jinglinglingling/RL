@@ -21,6 +21,27 @@ esac
 "$OSWORLD_COMPONENT_PYTHON" -c \
   'import sys; assert sys.version_info[:3] == (3, 13, 14), sys.version'
 
+"$OSWORLD_POLICY_PYTHON" - <<'PY'
+from pathlib import Path
+
+import megatron.bridge
+from megatron.bridge.training import checkpointing
+from nemo_rl.models.policy.workers import megatron_policy_worker
+
+bridge_source = Path(megatron.bridge.__file__).resolve()
+if not bridge_source.is_relative_to(
+    Path("/opt/nemo-rl/3rdparty/Megatron-Bridge-workspace/Megatron-Bridge")
+):
+    raise RuntimeError(f"megatron.bridge imported from unexpected path: {bridge_source}")
+
+print(
+    "osworld-v2-policy-preflight-ok",
+    bridge_source,
+    Path(checkpointing.__file__).resolve(),
+    Path(megatron_policy_worker.__file__).resolve(),
+)
+PY
+
 "$OSWORLD_DRIVER_PYTHON" - <<'PY'
 import os
 import ssl
@@ -67,18 +88,22 @@ PY
 
 cd "$OSWORLD_RL_ROOT"
 if [[ -n "${OSWORLD_EVAL_MODE:-}" ]]; then
-  case "$OSWORLD_EVAL_MODE" in
-    sft)
-      eval_config=examples/nemo_gym/grpo_nemotron_omni_30ba3b_osworld_v2_inference_v1_parity.yaml
-      ;;
-    checkpoint)
-      eval_config=examples/nemo_gym/grpo_nemotron_omni_30ba3b_osworld_v2_checkpoint_inference_v1_parity.yaml
-      ;;
-    *)
-      echo "OSWORLD_EVAL_MODE must be sft or checkpoint" >&2
-      exit 2
-      ;;
-  esac
+  if [[ -n "${OSWORLD_EVAL_CONFIG:-}" ]]; then
+    eval_config="$OSWORLD_EVAL_CONFIG"
+  else
+    case "$OSWORLD_EVAL_MODE" in
+      sft)
+        eval_config=examples/nemo_gym/grpo_nemotron_omni_30ba3b_osworld_v2_inference_v1_parity.yaml
+        ;;
+      checkpoint)
+        eval_config=examples/nemo_gym/grpo_nemotron_omni_30ba3b_osworld_v2_checkpoint_inference_v1_parity.yaml
+        ;;
+      *)
+        echo "OSWORLD_EVAL_MODE must be sft or checkpoint" >&2
+        exit 2
+        ;;
+    esac
+  fi
   "$OSWORLD_DRIVER_PYTHON" - "$eval_config" <<'PY'
 import sys
 

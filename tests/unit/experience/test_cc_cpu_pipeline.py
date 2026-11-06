@@ -237,7 +237,7 @@ def test_twenty_turn_shared_client_to_replay_and_advantages(
     asyncio.run(exercise())
 
 
-def test_mixed_cc_snapshot_preserves_rows_but_replay_restore_is_unsupported(
+def test_mixed_cc_snapshot_restores_by_logical_owner_cardinality(
     pipeline: tuple,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -282,16 +282,18 @@ def test_mixed_cc_snapshot_preserves_rows_but_replay_restore_is_unsupported(
             pad_value_dict={"token_ids": 0},
             include_message_violation_fields=False,
         )
-        # Do not lie about the logical group size (2) to make six physical rows load.
-        with pytest.raises(ValueError, match="expected_group_size=2"):
-            await restored_buffer.load_state_dict(
-                state,
-                max_groups=1,
-                expected_partition_id="train",
-                expected_group_size=2,
-                expected_manifest_digest=native_metadata["manifest_digest"],
-            )
-        assert restored_buffer.meta_list == []
+        restored = await restored_buffer.load_state_dict(
+            state,
+            max_groups=1,
+            expected_partition_id="train",
+            expected_group_size=2,
+            expected_manifest_digest=native_metadata["manifest_digest"],
+        )
+        assert restored == 1
+        assert restored_buffer.meta_list[0].sample_ids == meta.sample_ids
+        assert restored_buffer._group_ids == [
+            meta.tags[0]["dispatch_group_id"]
+        ]
         assert sorted(restored_plane.list_sample_ids("train")) == sorted(
             meta.sample_ids
         )

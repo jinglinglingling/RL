@@ -7,6 +7,10 @@ grpo:
   # Match the training scheduler horizon while loading optimizer-embedded
   # Megatron checkpoints. Early stop below makes this evaluation-only.
   max_num_steps: 300
+  # Evaluate all 361 tasks, but only provision eight four-rollout fork groups
+  # at once. The launcher derives max_val_samples from the dataset while
+  # preserving this explicit batch size.
+  val_batch_size: 8
   val_at_start: true
   val_at_resume: true
   stop_at_validation_metric: accuracy

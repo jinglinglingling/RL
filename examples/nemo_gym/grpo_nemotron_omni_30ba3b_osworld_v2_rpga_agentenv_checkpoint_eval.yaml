@@ -1,0 +1,35 @@
+# Evaluate a restored NeMo RL checkpoint under the same executable RPGA
+# R1-OTE contract used by the RFC0040 iter881 baseline.
+
+defaults: grpo_nemotron_omni_30ba3b_osworld_v2_checkpoint_inference_v1_parity.yaml
+
+grpo:
+  max_rollout_turns: 200
+
+policy:
+  generation:
+    top_p: 0.95
+    val_top_p: 0.95
+
+env:
+  nemo_gym:
+    config_paths:
+      - responses_api_models/vllm_model/configs/vllm_model.yaml
+      - responses_api_agents/nemotron_osworld/configs/nemotron_osworld_rpga_eval.yaml
+      - resources_servers/osworld/configs/osworld.yaml
+      - ${oc.env:OSWORLD_SANDBOX_CONFIG,resources_servers/osworld/configs/opensandbox_osworld.yaml}
+    nemotron_osworld:
+      responses_api_agents:
+        nemotron_osworld:
+          max_steps: 200
+          rollout_timeout_s: 3600
+          llm_timeout_s: 900
+          model_retries: 8
+          temperature: 0.6
+          top_p: 0.95
+          max_tokens: 16384
+          image_block_k: 8
+          image_boundary_s: 3
+          prompt_format_variant: rfc0015_v1
+          prompt_mode: hf_tools
+          execution_feedback: true

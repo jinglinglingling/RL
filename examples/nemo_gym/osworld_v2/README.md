@@ -4,12 +4,12 @@ This directory is the portable launcher for the validated OSWorld training path:
 
 - NeMo RL v2 `SingleController`
 - `TransferQueue` data plane
-- 4 nodes x 8 GPUs
+- B=17/N=16 production on 3 nodes x 8 GPUs (1 policy + 2 generation)
 - FlashREINFORCE B=8/N=8 smoke and B=17/N=16 production profiles
 - REINFORCE group-mean baseline or Dr.GRPO advantages
 - rewards clipped to `[0, 1]`
 - raw token-level importance sampling with a sampled-token binary-KL sequence
-  gate at `0.01`
+  gate (`0.01` for the B8 smoke profiles; `0.001` for B17/N16 production)
 - prompt-mean/token-mean loss aggregation
 - R3/router replay and context-compaction trajectory splitting
 - windowed sampling with maximum staleness 1

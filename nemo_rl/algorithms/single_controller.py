@@ -51,6 +51,7 @@ import shutil
 import statistics
 import threading
 import time
+import traceback
 import uuid
 import warnings
 from collections import deque
@@ -879,6 +880,18 @@ class SingleControllerActor:
         recovery_ledger = self._rollout_manager.recovery_ledger
         async with self._data_plane_checkpoint_barrier.mutation() as cut:
             recovery_ledger.load_state_dict(cut, parsed_state.ledger_state)
+            resized_groups = recovery_ledger.resize_groups_for_generation_count(
+                cut,
+                self._algo_cfg.num_generations_per_prompt,
+            )
+            if resized_groups:
+                print(
+                    "📦 Regenerating "
+                    f"{resized_groups} restored rollout recovery group(s) after "
+                    "generation-count change; current "
+                    f"N={self._algo_cfg.num_generations_per_prompt}",
+                    flush=True,
+                )
             recovery_ledger.prepare_for_restart(
                 cut,
                 require_logical_segments=(
@@ -1260,12 +1273,50 @@ class SingleControllerActor:
         reserve_state = await asyncio.to_thread(
             torch.load, reserve_path, weights_only=False
         )
+        refreshed = await self._refresh_spare_env_info(reserve_state)
+        if refreshed:
+            print(
+                f"📦 Refreshed extra_env_info for {refreshed} pooled spare(s) from "
+                "the current dataset",
+                flush=True,
+            )
         self._replacement_reserve.extend(reserve_state)
         print(
             f"📦 Restored {len(reserve_state)} pooled spare prompt(s) from checkpoint: "
             f"{reserve_path}",
             flush=True,
         )
+
+    async def _refresh_spare_env_info(self, reserve_state: list[Any]) -> int:
+        """Re-read each spare's ``extra_env_info`` from the current dataset row.
+
+        Spares are pickled whole, so a spare saved before the dataset's task
+        configs were rewritten (e.g. asset paths relocated) would otherwise keep
+        the stale config for the rest of the run. Rows are matched by ``idx`` and
+        ``task_name``; the prompt tensors are left as checkpointed.
+        """
+        dataset = getattr(getattr(self, "_dataloader", None), "dataset", None)
+        if dataset is None:
+            return 0
+        refreshed = 0
+        for spare in reserve_state:
+            if not isinstance(spare, dict) or "extra_env_info" not in spare:
+                continue
+            try:
+                sample_index = int(spare["idx"])
+                current = await asyncio.to_thread(dataset.__getitem__, sample_index)
+            except (KeyError, TypeError, ValueError, IndexError):
+                continue
+            if not isinstance(current, dict):
+                continue
+            if current.get("task_name") != spare.get("task_name"):
+                continue
+            if int(current.get("idx", -1)) != sample_index:
+                continue
+            if current.get("extra_env_info") != spare["extra_env_info"]:
+                spare["extra_env_info"] = current["extra_env_info"]
+                refreshed += 1
+        return refreshed
 
     async def _ray_get(self, obj_ref: Any) -> Any:
         """Await a Ray ObjectRef without blocking the asyncio event loop."""
@@ -1473,13 +1524,15 @@ class SingleControllerActor:
                 try:
                     rpc_submitted = True
                     finalized = await actor.finalize.remote(request)
-                except BaseException:
+                except BaseException as error:
                     self._finalizer_unknown_outcomes += 1
                     ledger.mark_finalization_unknown(cut, request.group_id)
                     print(
                         "FATAL: finalizer actor RPC failed after submission; canonical "
                         f"publication outcome is unknown for group {request.group_id}. "
-                        "Stopping validation without actor replacement or retry.",
+                        "Stopping validation without actor replacement or retry. "
+                        f"error={type(error).__name__}: {error!r}\n"
+                        f"{traceback.format_exc()}",
                         flush=True,
                     )
                     raise
@@ -1672,6 +1725,37 @@ class SingleControllerActor:
             replacements = 0
             generation_permit_released = False
             inflight_count_released = False
+
+            async def _replace_or_close_capture_drop() -> bool:
+                """Reuse this stamped slot with a spare after a capture-path drop."""
+                nonlocal generation_permit_released
+                nonlocal inflight_count_released
+                nonlocal lineage_group_id
+                nonlocal prompt
+                nonlocal replacements
+                replacement = self._take_replacement(target_step, replacements)
+                if replacement is None:
+                    self._buffer_capacity.release()
+                    self._credit_shortfall(target_step)
+                    return False
+
+                replacements += 1
+                prompt = replacement
+                lineage_group_id = None
+                print(
+                    f"  target_step={target_step}: substituting a spare prompt for "
+                    f"the dropped capture group (replacement {replacements}/"
+                    f"{self._async_cfg.rollout_failure.max_replacement_attempts}, "
+                    f"{len(self._replacement_reserve)} spare(s) left)",
+                    flush=True,
+                )
+                await self._rollout_permitted.wait()
+                await sem.acquire()
+                self._inflight_rollouts += 1
+                inflight_count_released = False
+                generation_permit_released = False
+                return True
+
             try:
                 if self._finalizer_actors:
                     # Token-capture path: run capture generation, release the
@@ -1714,8 +1798,8 @@ class SingleControllerActor:
                                         await self._rollout_manager.discard_recovery_group(
                                             cut, lineage_group_id
                                         )
-                                self._buffer_capacity.release()
-                                self._credit_shortfall(target_step)
+                                if await _replace_or_close_capture_drop():
+                                    continue
                                 return
                             finalized = await self._finalize_with_actor(request)
                             if finalized is None:
@@ -1725,8 +1809,8 @@ class SingleControllerActor:
                                 # so like the dropped-prompt path above the
                                 # train pump will never release this permit
                                 # and the step must be allowed to close short.
-                                self._buffer_capacity.release()
-                                self._credit_shortfall(target_step)
+                                if await _replace_or_close_capture_drop():
+                                    continue
                                 return
                             min_valid_fraction = self._master_config.token_capture.min_valid_fraction_per_group
                             below_threshold = (
@@ -1762,33 +1846,9 @@ class SingleControllerActor:
                                 f"{min_valid_fraction}); seeking a replacement",
                                 flush=True,
                             )
-                            replacement = self._take_replacement(
-                                target_step, replacements
-                            )
-                            if replacement is None:
+                            if not await _replace_or_close_capture_drop():
                                 self._rollout_manager.record_finalizer_dropped_prompt()
-                                self._buffer_capacity.release()
-                                self._credit_shortfall(target_step)
                                 return
-                            replacements += 1
-                            prompt = replacement
-                            lineage_group_id = None
-                            # A substitution is a fresh rollout, not a
-                            # continuation of the one that fell short, so it
-                            # observes the same pause a first dispatch does
-                            # instead of pushing new generation into a
-                            # weight-sync window.
-                            await self._rollout_permitted.wait()
-                            # The next generate_for_finalization call is a
-                            # brand-new generation and must be re-counted
-                            # against the same concurrency limiter a first
-                            # dispatch would hold; both permits were released
-                            # early above, right after the attempt that fell
-                            # short finished generating.
-                            await sem.acquire()
-                            self._inflight_rollouts += 1
-                            inflight_count_released = False
-                            generation_permit_released = False
                     except BaseException:
                         # On success ownership transfers to the train pump, which
                         # releases this permit after consuming the committed group.
@@ -2375,6 +2435,7 @@ class SingleControllerActor:
             step_finalizer_metrics: dict[str, list[float]] = {}
             logical_owners: set[str] = set()
             staged_window_metas: list[KVBatchMeta] = []
+            full_window_chunk_sizes: list[int] = []
             last_staged_policy_probe_at: Optional[float] = None
 
             with self._timer.time("total_step_time"):
@@ -2647,8 +2708,12 @@ class SingleControllerActor:
                     objective_num_groups = num_groups
                     if staged_window_metas:
                         objective_num_groups += groups_dispatched
-                        train_meta = staged_window_metas[0].concat(
-                            *staged_window_metas[1:], train_meta
+                        full_window_chunks = [*staged_window_metas, train_meta]
+                        full_window_chunk_sizes = [
+                            meta.size for meta in full_window_chunks
+                        ]
+                        train_meta = full_window_chunks[0].concat(
+                            *full_window_chunks[1:]
                         )
                         staged_window_metas.clear()
                         selected_group_ids = self._group_ids_from_meta(train_meta)
@@ -2715,6 +2780,26 @@ class SingleControllerActor:
                             train_meta,
                             has_valid_training_tokens,
                         ) = await self._advantage_stage(train_meta)
+                    policy_train_metas = [train_meta]
+                    if full_window_chunk_sizes:
+                        if sum(full_window_chunk_sizes) != train_meta.size:
+                            raise RuntimeError(
+                                "full advantage-window row count changed during "
+                                "advantage calculation"
+                            )
+                        offsets = [0]
+                        for chunk_size in full_window_chunk_sizes:
+                            offsets.append(offsets[-1] + chunk_size)
+                        policy_train_metas = [
+                            train_meta.slice(start, stop)
+                            for start, stop in zip(offsets, offsets[1:])
+                        ]
+                        log.info(
+                            "train_pump: step %d training full advantage window "
+                            "as %d trajectory chunk(s)",
+                            version_during_step,
+                            len(policy_train_metas),
+                        )
                     if context_compaction:
                         # The advantage stage has verified every owner/segment.
                         # Count those owners, not the physical rows or sampler tally.
@@ -2793,11 +2878,12 @@ class SingleControllerActor:
                                             self._loss_fn,
                                         )
                                         step_open = True
-                                    await asyncio.to_thread(
-                                        self._trainer.train_microbatches_from_meta,
-                                        train_meta,
-                                        train_fields=self._train_fields,
-                                    )
+                                    for policy_train_meta in policy_train_metas:
+                                        await asyncio.to_thread(
+                                            self._trainer.train_microbatches_from_meta,
+                                            policy_train_meta,
+                                            train_fields=self._train_fields,
+                                        )
                                     # A PPO step is one chunk: nothing to
                                     # accumulate, so close every epoch here.
                                     if self._is_ppo:

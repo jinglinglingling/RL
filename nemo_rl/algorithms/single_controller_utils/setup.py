@@ -1683,6 +1683,13 @@ def setup_single_controller(
     # without a lock, so the first concurrent puts into an unregistered
     # partition can race kv_retrieve_meta and kill the controller thread
     # (see TQDataPlaneClient.register_partition).
+    #
+    # A native TQ restore already restored those partition schemas and their
+    # live rows. Re-running register_partition afterwards writes and clears a
+    # synthetic schema row in the restored partition. Besides producing dtype
+    # conflicts with the restored schema, that clear can invalidate staged
+    # token rows needed by rollout recovery. Only warm a fresh data plane.
+    fresh_data_plane = data_plane_checkpoint_metadata is None
     token_capture_cfg = master_config.token_capture
     if not token_capture_cfg.enabled:
         # SingleController reuses one partition for the run. Warm every known
@@ -1698,16 +1705,17 @@ def setup_single_controller(
                 for field in sorted(WIRE_MULTIMODAL_FIELDS)
                 if field not in partition_fields
             )
-        dp_client.register_partition(
-            partition_id=partition_id,
-            fields=partition_fields,
-            num_samples=(
-                master_config.async_rl.max_buffered_rollouts
-                * algo_cfg.num_generations_per_prompt
-            ),
-            consumer_tasks=["prev_lp", "ref_lp", "train"],
-            grpo_group_size=algo_cfg.num_generations_per_prompt,
-        )
+        if fresh_data_plane:
+            dp_client.register_partition(
+                partition_id=partition_id,
+                fields=partition_fields,
+                num_samples=(
+                    master_config.async_rl.max_buffered_rollouts
+                    * algo_cfg.num_generations_per_prompt
+                ),
+                consumer_tasks=["prev_lp", "ref_lp", "train"],
+                grpo_group_size=algo_cfg.num_generations_per_prompt,
+            )
     else:
         from nemo_rl.data_plane.schema import (
             DP_TRAIN_FIELDS,
@@ -1737,25 +1745,26 @@ def setup_single_controller(
                 for field in sorted(WIRE_MULTIMODAL_FIELDS)
                 if field not in partition_fields
             )
-        dp_client.register_partition(
-            partition_id=partition_id,
-            fields=partition_fields,
-            num_samples=num_rollout_samples,
-            consumer_tasks=["prev_lp", "ref_lp", "train"],
-            grpo_group_size=group_size,
-        )
-        dp_client.register_partition(
-            partition_id=token_capture_cfg.staging_partition,
-            fields=list(STAGING_FIELDS)
-            + ([STAGING_ROUTED_EXPERTS_FIELD] if r3_enabled else [])
-            + (
-                sorted(PACKED_MULTIMODAL_FIELDS)
-                if token_capture_cfg.context_compaction
-                else []
-            ),
-            num_samples=num_rollout_samples,
-            consumer_tasks=["finalize", "prev_lp", "train"],
-        )
+        if fresh_data_plane:
+            dp_client.register_partition(
+                partition_id=partition_id,
+                fields=partition_fields,
+                num_samples=num_rollout_samples,
+                consumer_tasks=["prev_lp", "ref_lp", "train"],
+                grpo_group_size=group_size,
+            )
+            dp_client.register_partition(
+                partition_id=token_capture_cfg.staging_partition,
+                fields=list(STAGING_FIELDS)
+                + ([STAGING_ROUTED_EXPERTS_FIELD] if r3_enabled else [])
+                + (
+                    sorted(PACKED_MULTIMODAL_FIELDS)
+                    if token_capture_cfg.context_compaction
+                    else []
+                ),
+                num_samples=num_rollout_samples,
+                consumer_tasks=["finalize", "prev_lp", "train"],
+            )
         # Host Gym's capture core in every vLLM DP leader (in-worker DP
         # client + TQTokenSink + the single install_capture call), and give
         # workers the initial weight version to stamp on captured calls.

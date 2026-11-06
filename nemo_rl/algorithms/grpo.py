@@ -3231,6 +3231,7 @@ def grpo_train(
                             input_batch=repeated_batch,
                             tokenizer=tokenizer,
                             task_to_env=task_to_env,
+                            num_generations=master_config.grpo.num_generations_per_prompt,
                             max_seq_len=master_config.policy[
                                 "max_total_sequence_length"
                             ],
@@ -4179,10 +4180,13 @@ def validate(
         total_rewards = []
         total_lengths = []
         all_message_logs = []  # Collect all message logs
+        additional_metrics_to_report: dict[str, Any] = {}
 
         max_batches = (
-            master_config.grpo.max_val_samples // master_config.grpo.val_batch_size
-        )
+            master_config.grpo.max_val_samples
+            + master_config.grpo.val_batch_size
+            - 1
+        ) // master_config.grpo.val_batch_size
         for batch_idx, val_batch in enumerate(val_dataloader):
             if batch_idx >= max_batches:
                 break
@@ -4190,7 +4194,7 @@ def validate(
             if val_num_generations_per_prompt > 1:
                 val_batch = val_batch.repeat_interleave(val_num_generations_per_prompt)
 
-            additional_metrics_to_report = dict()
+            additional_metrics_to_report = {}
             # Generate responses (updates the LLMMessageLogType in batch_with_msg_logs)
             # Use async rollouts when enabled by config/backend defaults.
             # We cascade NeMo-Gym first since NeMo-Gym also uses async rollouts.
@@ -4215,6 +4219,7 @@ def validate(
                     input_batch=val_batch,
                     tokenizer=tokenizer,
                     task_to_env=val_task_to_env,
+                    num_generations=val_num_generations_per_prompt,
                     max_seq_len=master_config.policy["max_total_sequence_length"],
                     generation_config=generation_config,
                     sampling_params=val_sampling_params,

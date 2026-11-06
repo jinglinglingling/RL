@@ -62,6 +62,7 @@ from nemo_rl.environments.nemo_gym import (
     get_pad_dynamic_image_shapes,
 )
 from nemo_rl.experience.interfaces import (
+    NEMO_GYM_ACTIVE_GENERATION_INDICES_KEY,
     NEMO_GYM_GROUP_ATTEMPT_KEY,
     NEMO_GYM_GROUP_ID_KEY,
     NEMO_GYM_ROLLOUT_INDEX_KEY,
@@ -2422,6 +2423,7 @@ def _prepare_nemo_gym_rows(
         row[NEMO_GYM_GROUP_ID_KEY] = group_ids[group_index]
         row[NEMO_GYM_GROUP_ATTEMPT_KEY] = group_attempts[group_index]
         row[NEMO_GYM_ROLLOUT_INDEX_KEY] = rollout_index
+        row[NEMO_GYM_ACTIVE_GENERATION_INDICES_KEY] = list(range(num_generations))
 
 
 def _tensorize_nemo_gym_result(result: dict) -> None:
@@ -2457,6 +2459,7 @@ async def run_async_nemo_gym_rollout(
     sampling_params: Optional[GenerationSamplingParams] = None,
     deduplicate_multimodal_data: bool = False,
     debug_payload_metrics: bool = False,
+    prompt_group_size: Optional[int] = None,
 ) -> AsyncGenerator[NemoGymRolloutResult, None]:
     """Stream complete NeMo-Gym prompt groups in group-completion order.
 
@@ -2495,6 +2498,10 @@ async def run_async_nemo_gym_rollout(
             remote Gym return and restore the exact original payload locally.
         debug_payload_metrics: Emit logical, physical, and serialized media
             payload metrics at the Gym Ray boundary.
+        prompt_group_size: Number of adjacent rollout rows that share one prompt
+            for NeMo-Gym fork metadata. Defaults to ``num_generations``. Sync
+            callers can aggregate the whole batch while preserving smaller
+            prompt groups.
 
     Yields:
         ``NemoGymRolloutResult`` objects in prompt-group completion order. Rows
@@ -2557,6 +2564,15 @@ async def run_async_nemo_gym_rollout(
         raise ValueError("num_generations must be greater than zero")
     if not nemo_gym_rows:
         raise ValueError("NeMo-Gym rollout batch must not be empty")
+    effective_prompt_group_size = (
+        num_generations if prompt_group_size is None else prompt_group_size
+    )
+    if effective_prompt_group_size <= 0:
+        raise ValueError("prompt_group_size must be greater than zero")
+    if len(nemo_gym_rows) % effective_prompt_group_size != 0:
+        raise ValueError(
+            "NeMo-Gym rollout batch size must be divisible by prompt_group_size"
+        )
     if len(nemo_gym_rows) % num_generations != 0:
         raise ValueError(
             "NeMo-Gym rollout batch size must be divisible by num_generations"
@@ -2584,7 +2600,7 @@ async def run_async_nemo_gym_rollout(
             nemo_gym_rows,
             generation_config,
             sampling_params,
-            num_generations,
+            effective_prompt_group_size,
         )
         accumulator = _NemoGymStreamAccumulator(
             rows=nemo_gym_rows,
@@ -2706,6 +2722,7 @@ def run_nemo_gym_rollout_sync(
     mask_env_flagged_samples: bool = True,
     deduplicate_multimodal_data: bool = False,
     debug_payload_metrics: bool = False,
+    num_generations: Optional[int] = None,
 ) -> NemoGymRolloutResult:
     """Run and return one complete NeMo-Gym batch synchronously.
 
@@ -2723,6 +2740,9 @@ def run_nemo_gym_rollout_sync(
         generation_config: Sampling parameters forwarded to every NeMo-Gym row.
         log_full_result_tables: Whether to include complete per-agent result
             payloads as W&B Tables in the rollout metrics.
+        num_generations: Number of adjacent rollout rows belonging to each prompt.
+            Defaults to the full batch for callers that intentionally pass one
+            heterogeneous group.
         max_seq_len: Policy sequence-length limit used for compatibility validation.
         max_rollout_turns: Must be ``None`` because NeMo-Gym owns turn limits.
         greedy: Must be ``False`` because this path does not support greedy mode.
@@ -2771,6 +2791,7 @@ def run_nemo_gym_rollout_sync(
             sampling_params=sampling_params,
             deduplicate_multimodal_data=deduplicate_multimodal_data,
             debug_payload_metrics=debug_payload_metrics,
+            prompt_group_size=num_generations,
         ):
             pass
         if rollout_result is None:

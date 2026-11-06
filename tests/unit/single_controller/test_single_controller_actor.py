@@ -1907,7 +1907,7 @@ def test_train_pump_chunked_step_by_engine_regime(
 
 
 def test_train_pump_stages_full_advantage_window_before_training(monkeypatch) -> None:
-    """Partial Molt arrivals probe the policy but train as one full population."""
+    """Compute one full-population advantage, then train in trajectory chunks."""
     meta = KVBatchMeta(
         partition_id="rollout_data",
         task_name="train",
@@ -1946,7 +1946,7 @@ def test_train_pump_stages_full_advantage_window_before_training(monkeypatch) ->
     asyncio.run(asyncio.wait_for(ctrl._train_pump(), timeout=1.0))
 
     assert trainer.probe_sizes == [1]
-    assert trainer.train_sizes == [2]
+    assert trainer.train_sizes == [1, 1]
     assert sampler.select_bounds == [(1, 2), (1, 1)]
     assert ctrl._advantage_stage.await_count == 1
     assert ctrl._advantage_stage.await_args.args[0].size == 2

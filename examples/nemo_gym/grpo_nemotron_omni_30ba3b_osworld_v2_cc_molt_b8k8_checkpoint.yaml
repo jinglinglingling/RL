@@ -28,7 +28,9 @@ checkpointing:
   checkpoint_dir: ${oc.env:OSWORLD_CHECKPOINT_DIR}
   metric_name: null
   higher_is_better: false
-  keep_top_k: 2
+  # Keep enough recent steps to retain a clean rollback point when a latent
+  # evaluator incompatibility is discovered during a later rollout.
+  keep_top_k: 5
   save_period: 1
   checkpoint_must_save_by: ${oc.env:OSWORLD_CHECKPOINT_MUST_SAVE_BY,00:03:40:00}
   save_optimizer: true

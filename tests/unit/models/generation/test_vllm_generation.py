@@ -660,7 +660,9 @@ def _install_fake_vllm_openai_modules(monkeypatch):
             self.kwargs = kwargs
             self.instances.append(self)
 
-    class VLLMValidationError(ValueError):
+    # Match vLLM 0.29, where VLLMValidationError is not a ValueError. This
+    # ensures the plain-ValueError branch is tested independently.
+    class VLLMValidationError(Exception):
         def __init__(self, message, *, parameter=None, value=None):
             super().__init__(message)
             self.parameter = parameter
@@ -859,6 +861,124 @@ async def test_context_overflow_returns_http_400_for_nemo_gym(monkeypatch):
     assert error["type"] == "invalid_request_error"
     assert error["param"] == "input_tokens"
     assert error["code"] == 400
+
+
+def _setup_fake_vllm_chat_handler(monkeypatch):
+    """Build the chat-completions handler against the fake vLLM modules."""
+    _, _, openai_serving_chat = _install_fake_vllm_openai_modules(monkeypatch)
+
+    worker = VllmAsyncGenerationWorkerImpl.__new__(VllmAsyncGenerationWorkerImpl)
+    worker.cfg = {
+        "temperature": 1.0,
+        "top_p": 1.0,
+        "val_temperature": 0.0,
+        "val_top_p": 1.0,
+        "vllm_cfg": {},
+    }
+    worker.llm = MagicMock(model_config="model-config", renderer="renderer")
+    worker._http_engine_client = worker.llm
+    worker._capture_calls = {}
+    worker.token_capture = None
+    worker.llm_async_engine_args = MagicMock()
+    worker.llm_async_engine_args.create_model_config.return_value = MagicMock(
+        served_model_name="served-model", model="model-path"
+    )
+
+    app = _FakeFastAPIApp()
+    worker._setup_vllm_openai_api_server(app)
+    chat_handler = next(
+        handler for path, handler in app.routes if path == "/v1/chat/completions"
+    )
+    return worker, openai_serving_chat.instances[0], chat_handler
+
+
+def _fake_chat_request():
+    return types.SimpleNamespace(
+        top_k=-1,
+        top_p=1.0,
+        temperature=1.0,
+        max_tokens=1,
+        max_completion_tokens=None,
+    )
+
+
+def _track_request_capture(worker, request):
+    call = MagicMock()
+    worker._capture_calls[id(request)] = (call, [], None)
+    worker.token_capture = MagicMock()
+    return call, worker.token_capture
+
+
+@pytest.mark.asyncio
+async def test_plain_value_error_context_overflow_returns_http_400(monkeypatch):
+    """A plain vLLM context-overflow ValueError must be a client error."""
+    worker, serving_chat, chat_handler = _setup_fake_vllm_chat_handler(monkeypatch)
+    message = "Input length (49153) exceeds model's maximum context length (49152)."
+
+    async def create_chat_completion(_request, _raw_request):
+        raise ValueError(message)
+
+    serving_chat.create_chat_completion = create_chat_completion
+    request = _fake_chat_request()
+    call, token_capture = _track_request_capture(worker, request)
+    response = await chat_handler(request, MagicMock())
+
+    response_content = response.body.decode()
+    assert response.status_code == 400
+    assert _nemo_gym_recognizes_context_overflow(
+        status=response.status_code,
+        response_content=response_content,
+    )
+    assert json.loads(response_content)["error"] == {
+        "message": message,
+        "type": "invalid_request_error",
+        "param": "input_tokens",
+        "code": 400,
+    }
+    token_capture.fail_call.assert_called_once_with(call, reason="context_length")
+
+
+@pytest.mark.asyncio
+async def test_multimodal_maximum_model_length_returns_http_400(monkeypatch):
+    """vLLM's multimodal overflow wording must also be a recognizable 400."""
+    worker, serving_chat, chat_handler = _setup_fake_vllm_chat_handler(monkeypatch)
+    message = (
+        "The total number of tokens (prompt tokens and multimodal embedding tokens) "
+        "is greater than the maximum model length."
+    )
+
+    async def create_chat_completion(_request, _raw_request):
+        raise ValueError(message)
+
+    serving_chat.create_chat_completion = create_chat_completion
+    request = _fake_chat_request()
+    call, token_capture = _track_request_capture(worker, request)
+    response = await chat_handler(request, MagicMock())
+
+    response_content = response.body.decode()
+    assert response.status_code == 400
+    assert message in response_content
+    assert _nemo_gym_recognizes_context_overflow(
+        status=response.status_code,
+        response_content=response_content,
+    )
+    token_capture.fail_call.assert_called_once_with(call, reason="context_length")
+
+
+@pytest.mark.asyncio
+async def test_unrelated_value_error_is_reraised(monkeypatch):
+    """Only context overflow is a client error; other ValueErrors stay loud."""
+    worker, serving_chat, chat_handler = _setup_fake_vllm_chat_handler(monkeypatch)
+
+    async def create_chat_completion(_request, _raw_request):
+        raise ValueError("unexpected internal failure")
+
+    serving_chat.create_chat_completion = create_chat_completion
+    request = _fake_chat_request()
+    call, token_capture = _track_request_capture(worker, request)
+    with pytest.raises(ValueError, match="unexpected internal failure"):
+        await chat_handler(request, MagicMock())
+    token_capture.fail_call.assert_called_once_with(call, reason="engine_error")
 
 
 def test_nano_v3_reasoning_parser_swaps_reasoning_when_thinking_disabled(

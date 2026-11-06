@@ -20,7 +20,9 @@ import pytest
 from examples.nemo_gym.freeze_osworld_rlvr_band import freeze_band
 
 
-def _write_source(root: Path, *, rate: float = 0.125) -> Path:
+def _write_source(
+    root: Path, *, rate: float = 0.125, unsafe_tb_commands: bool = False
+) -> Path:
     task_id = "task_001"
     asset = root / "live" / "uploads" / "input.txt"
     asset.parent.mkdir(parents=True)
@@ -64,6 +66,35 @@ def _write_source(root: Path, *, rate: float = 0.125) -> Path:
             ],
         },
     }
+    if unsafe_tb_commands:
+        task["config"].insert(
+            0,
+            {
+                "type": "execute",
+                "parameters": {
+                    "command": "pkill -f thunderbird; sleep 1; true",
+                    "shell": True,
+                },
+            },
+        )
+        task["config"].insert(
+            1,
+            {
+                "type": "execute",
+                "parameters": {
+                    "command": ["echo", "safe-list-command"],
+                },
+            },
+        )
+        task["evaluator"]["postconfig"] = [
+            {
+                "type": "execute",
+                "parameters": {
+                    "command": "pkill -TERM -f thunderbird; sleep 2; true",
+                    "shell": True,
+                },
+            }
+        ]
     tasks = root / "live" / "tasks"
     tasks.mkdir()
     (tasks / f"{task_id}.json").write_text(json.dumps(task))
@@ -114,3 +145,115 @@ def test_freeze_band_rejects_tasks_outside_offline_dapo_band(tmp_path):
         freeze_band(source, output, num_repeats=1)
 
     assert not output.exists()
+
+
+def test_freeze_band_repairs_thunderbird_pkill_self_match(tmp_path):
+    source = _write_source(tmp_path, unsafe_tb_commands=True)
+    output = tmp_path / "frozen"
+
+    freeze_band(source, output, num_repeats=1)
+
+    source_task = json.loads((source / "tasks" / "task_001.json").read_text())
+    assert source_task["config"][0]["parameters"]["command"].startswith("pkill -f")
+
+    task = json.loads((output / "tasks" / "task_001.json").read_text())
+    setup_command = task["config"][0]["parameters"]["command"]
+    postconfig_command = task["evaluator"]["postconfig"][0]["parameters"]["command"]
+    assert 'pkill -x "$name"' in setup_command
+    assert 'pkill -TERM -x "$name"' in postconfig_command
+    assert setup_command.endswith("; sleep 1; true")
+    assert postconfig_command.endswith("; sleep 2; true")
+    assert task["config"][1]["parameters"]["command"] == [
+        "echo",
+        "safe-list-command",
+    ]
+    assert len(task["metadata"]["freeze_repairs"]) == 2
+
+    snapshot = json.loads((output / "SNAPSHOT.json").read_text())
+    assert snapshot["runtime_command_repairs"] == 2
+
+
+def test_freeze_band_guards_all_pkill_f_patterns(tmp_path):
+    source = _write_source(tmp_path)
+    task_path = source / "tasks" / "task_001.json"
+    task = json.loads(task_path.read_text())
+    task["config"].insert(
+        0,
+        {
+            "type": "execute",
+            "parameters": {
+                "command": (
+                    "pkill -f 'cirroair/server.py'; "
+                    "pkill -TERM -f google-chrome; "
+                    "pkill -f '[s]afe-pattern'; true"
+                )
+            },
+        },
+    )
+    task_path.write_text(json.dumps(task))
+    output = tmp_path / "frozen"
+
+    freeze_band(source, output, num_repeats=1)
+
+    frozen = json.loads((output / "tasks" / "task_001.json").read_text())
+    command = frozen["config"][0]["parameters"]["command"]
+    assert "pkill -f '[c]irroair/server.py'" in command
+    assert "pkill -TERM -f [g]oogle-chrome" in command
+    assert "pkill -f '[s]afe-pattern'" in command
+    assert len(frozen["metadata"]["freeze_repairs"]) == 1
+
+
+def test_freeze_band_removes_duplicate_pre_upload_consumer(tmp_path):
+    source = _write_source(tmp_path)
+    task_path = source / "tasks" / "task_001.json"
+    task = json.loads(task_path.read_text())
+    copy_step = {
+        "type": "execute",
+        "parameters": {
+            "command": [
+                "cp",
+                "/home/user/.uploads/input.txt",
+                "/home/user/input.txt",
+            ]
+        },
+    }
+    task["config"] = [copy_step, task["config"][0], copy_step]
+    task_path.write_text(json.dumps(task))
+    output = tmp_path / "frozen"
+
+    freeze_band(source, output, num_repeats=1)
+
+    frozen = json.loads((output / "tasks" / "task_001.json").read_text())
+    assert [step["type"] for step in frozen["config"]] == [
+        "upload_file",
+        "execute",
+    ]
+    assert frozen["metadata"]["freeze_repairs"] == [
+        {
+            "kind": "remove_duplicate_pre_upload_execute",
+            "removed_config_index": 0,
+            "post_upload_config_index": 2,
+            "reason": "OpenSandbox setup is fail-fast; uploads must exist first",
+        }
+    ]
+    snapshot = json.loads((output / "SNAPSHOT.json").read_text())
+    assert snapshot["upload_dependency_repairs"] == 1
+
+
+def test_freeze_band_rejects_ambiguous_pre_upload_consumer(tmp_path):
+    source = _write_source(tmp_path)
+    task_path = source / "tasks" / "task_001.json"
+    task = json.loads(task_path.read_text())
+    task["config"].insert(
+        0,
+        {
+            "type": "execute",
+            "parameters": {
+                "command": "cp /home/user/.uploads/input.txt /home/user/input.txt"
+            },
+        },
+    )
+    task_path.write_text(json.dumps(task))
+
+    with pytest.raises(ValueError, match="consumes /home/user/.uploads"):
+        freeze_band(source, tmp_path / "frozen", num_repeats=1)

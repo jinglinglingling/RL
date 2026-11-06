@@ -267,6 +267,33 @@ def test_vlm_launcher_dispatches_on_async_grpo_enabled():
     assert sync_calls & _sync_trainer_names(tree)
 
 
+def test_nemo_gym_checkpoint_eval_preserves_explicit_validation_batch_size():
+    """Evaluate every sample without dispatching the full set in one burst."""
+    root = Path(__file__).parents[2]
+    config = load_config_with_inheritance(
+        root
+        / "examples/nemo_gym/"
+        "grpo_nemotron_omni_30ba3b_osworld_v2_checkpoint_inference_v1_parity.yaml"
+    )
+    assert config.grpo.max_val_samples is None
+    assert config.grpo.val_batch_size == 8
+
+    tree = ast.parse(
+        (root / "examples/nemo_gym/run_grpo_nemo_gym.py").read_text()
+    )
+    val_batch_assignments = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        and any(
+            ast.unparse(target) == "config.grpo.val_batch_size"
+            for target in node.targets
+        )
+    ]
+    assert len(val_batch_assignments) == 1
+    assert ast.unparse(val_batch_assignments[0].value) == "val_batch_size"
+
+
 def test_reward_penalty_config_requires_explicit_unwanted_token_ids():
     """Unwanted-token penalty requires explicit unwanted-token config.
 

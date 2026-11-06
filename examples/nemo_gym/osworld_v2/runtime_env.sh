@@ -40,9 +40,14 @@ else
   : "${OSWORLD_GRPO_TRAIN_DATA:?}"
 fi
 if [[ -n "${OSWORLD_RLVR_SNAPSHOT:-}" ]]; then
-  test -d "$OSWORLD_RLVR_SNAPSHOT/tmp_funcs"
   test -s "$OSWORLD_RLVR_SNAPSHOT/SNAPSHOT.json"
   export OSWORLD_RLVR_SNAPSHOT
+fi
+if [[ -n "${OSWORLD_RLVR_FUNCTIONS_ROOT:-}" ]]; then
+  test -d "$OSWORLD_RLVR_FUNCTIONS_ROOT"
+  export OSWORLD_RLVR_FUNCTIONS_ROOT
+elif [[ -n "${OSWORLD_RLVR_SNAPSHOT:-}" ]]; then
+  test -d "$OSWORLD_RLVR_SNAPSHOT/tmp_funcs"
 fi
 
 export OSWORLD_RL_ROOT=/opt/nemo-rl
@@ -51,6 +56,8 @@ OSWORLD_BRIDGE_ROOT="$OSWORLD_RL_ROOT/3rdparty/Megatron-Bridge-workspace/Megatro
 
 export OSWORLD_DRIVER_VENV="${OSWORLD_DRIVER_VENV:-/opt/ray_venvs/nemo_rl.models.generation.vllm.vllm_worker_async.VllmAsyncGenerationWorker}"
 export OSWORLD_DRIVER_PYTHON="$OSWORLD_DRIVER_VENV/bin/python"
+export OSWORLD_POLICY_VENV="${OSWORLD_POLICY_VENV:-/opt/ray_venvs/nemo_rl.models.policy.workers.megatron_policy_worker.MegatronPolicyWorker}"
+export OSWORLD_POLICY_PYTHON="$OSWORLD_POLICY_VENV/bin/python"
 if [[ -z "${OSWORLD_COMPONENT_PYTHON:-}" ]]; then
   for candidate in \
     /root/.local/share/uv/python/cpython-3.13.14-linux-x86_64-gnu/bin/python3 \
@@ -88,6 +95,15 @@ export NEMO_GYM_EXTRA_ROOTS="$OSWORLD_GYM_ROOT:$OSWORLD_RL_ROOT"
 export NRL_FORCE_REBUILD_VENVS=false
 export NRL_IGNORE_VERSION_MISMATCH=1
 export NEMO_LENS_ENABLED=0
+if [[ -n "${OSWORLD_EVALUATOR_TOOLS_ROOT:-}" ]]; then
+  test -x "$OSWORLD_EVALUATOR_TOOLS_ROOT/usr/bin/ffprobe"
+  test -x "$OSWORLD_EVALUATOR_TOOLS_ROOT/usr/bin/pdftotext"
+  test -d "$OSWORLD_EVALUATOR_TOOLS_ROOT/runtime-libs"
+  test -x /usr/lib/libreoffice/program/soffice
+  export OSWORLD_EVALUATOR_PYTHON="${OSWORLD_EVALUATOR_PYTHON:-$NEMO_GYM_VENV_DIR/resources_servers/osworld/.venv/bin/python}"
+  test -x "$OSWORLD_EVALUATOR_PYTHON"
+  export PATH="$OSWORLD_RL_ROOT/examples/nemo_gym/osworld_v2/evaluator_tools/bin:$PATH"
+fi
 
 export NRL_REFIT_BUFFER_MEMORY_RATIO="${NRL_REFIT_BUFFER_MEMORY_RATIO:-0.005}"
 export NRL_REFIT_NUM_BUFFERS="${NRL_REFIT_NUM_BUFFERS:-1}"
@@ -117,6 +133,7 @@ export TORCHINDUCTOR_CACHE_DIR="$OSWORLD_CACHE_ROOT/inductor"
 export TRITON_CACHE_DIR="$OSWORLD_CACHE_ROOT/triton"
 export CUDA_CACHE_PATH="$OSWORLD_CACHE_ROOT/cuda"
 export TORCH_EXTENSIONS_DIR="$OSWORLD_CACHE_ROOT/torch-extensions"
+export VAT_AUDIT_TMP="${VAT_AUDIT_TMP:-$OSWORLD_CACHE_ROOT/evaluator-tmp}"
 export TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST:-9.0 10.0}"
 
 mkdir -p \
@@ -129,12 +146,14 @@ mkdir -p \
   "$WANDB_CONFIG_DIR" \
   "$WANDB_DATA_DIR" \
   "$SWANLAB_SAVE_DIR" \
+  "$VAT_AUDIT_TMP" \
   "$TORCHINDUCTOR_CACHE_DIR" \
   "$TRITON_CACHE_DIR" \
   "$CUDA_CACHE_PATH" \
   "$TORCH_EXTENSIONS_DIR"
 
 test -x "$OSWORLD_DRIVER_PYTHON"
+test -x "$OSWORLD_POLICY_PYTHON"
 test -x "$OSWORLD_COMPONENT_PYTHON"
 test -r "$NANO_OMNI_MODEL_NAME/config.json"
 test -r "$NANO_OMNI_CHAT_TEMPLATE"

@@ -826,8 +826,9 @@ class MasterConfig(BaseModel, extra="allow"):
 
 def validate_cc_objective(grpo: GRPOConfig, loss: ClippedPGLossConfig) -> None:
     """Allow only qualified CC objectives whose logical-owner semantics are defined."""
+    sample_mean = loss.loss_agg_mode == "seq-mean-token-mean"
     common_override = (
-        not loss.token_level_loss
+        loss.token_level_loss == sample_mean
         or loss.sequence_level_importance_ratios
         or loss.use_kl_in_reward
         or loss.positive_example_nll_weight != 0
@@ -879,13 +880,15 @@ def validate_cc_objective(grpo: GRPOConfig, loss: ClippedPGLossConfig) -> None:
         and not loss.disable_ppo_ratio
         and not loss.use_cispo
         and not loss.use_on_policy_kl_approximation
-        and loss.loss_agg_mode == "prompt-mean-token-mean"
+        and loss.loss_agg_mode
+        in ("token-mean", "prompt-mean-token-mean", "seq-mean-token-mean")
     )
     if common_override or not (standard_grpo or molt_reinforce or flash_reinforce):
         raise ValueError(
             "CC requires either standard token-level GRPO or the qualified Molt "
             "reinforce_baseline + token-IS + per-row ratio gate, or the qualified "
-            "FlashREINFORCE binary-KL gate + prompt-mean-token-mean objective with "
+            "FlashREINFORCE binary-KL gate + token-mean, prompt-mean-token-mean, or "
+            "seq-mean-token-mean (token_level_loss=False) objective with "
             "reinforce_baseline/Dr.GRPO, without advantage/reward overrides"
         )
 

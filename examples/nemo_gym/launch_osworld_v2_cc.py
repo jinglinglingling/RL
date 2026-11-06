@@ -33,6 +33,10 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
+from nemo_gym.global_config import (
+    GlobalConfigDictParser,
+    GlobalConfigDictParserConfig,
+)
 from omegaconf import OmegaConf
 
 from nemo_rl.algorithms.single_controller_utils.config import (
@@ -69,7 +73,58 @@ RECIPE_CONFIG_PATHS = {
     "flash-b17n16-reinforce": Path(__file__).with_name(
         "grpo_nemotron_omni_30ba3b_osworld_v2_cc_flash_b17n16_reinforce_checkpoint.yaml"
     ),
+    "yi-union2698-agentenv-flash-b32n4": Path(__file__).with_name(
+        "grpo_nemotron_omni_30ba3b_osworld_yi_union2698_agentenv_flash_b32n4.yaml"
+    ),
 }
+
+
+def _validate_rfc0040_history_policy(policy: dict, *, source: str) -> None:
+    """Reject settings inherited from a different history-policy type."""
+    if policy.get("type") != "rfc0040_k_s":
+        return
+
+    allowed = {"block_k", "boundary_s", "omission_marker"}
+    unknown = set(policy.get("config", {})) - allowed
+    if unknown:
+        raise ValueError(
+            f"RFC0040 K/S history policy in {source} received settings inherited "
+            f"from a different policy type: {sorted(unknown)}"
+        )
+
+
+def validate_osworld_history_policy_config(config: MasterConfig) -> None:
+    """Validate both the recipe overlay and Gym's final runtime merge."""
+    gym = config.env["nemo_gym"]
+    agent = gym["nemotron_osworld"]["responses_api_agents"]["nemotron_osworld"]
+    _validate_rfc0040_history_policy(
+        agent.get("context_history", {}).get("policy", {}),
+        source="the NeMo RL recipe",
+    )
+
+    runtime_config = GlobalConfigDictParser().parse(
+        GlobalConfigDictParserConfig(
+            initial_global_config_dict=OmegaConf.create(
+                gym
+                | {
+                    "policy_base_url": "http://config-validation.invalid/v1",
+                    "policy_api_key": "config-validation",
+                    "policy_model_name": config.policy["model_name"],
+                }
+            ),
+            skip_load_from_cli=True,
+            skip_load_from_dotenv=True,
+            offline=True,
+        )
+    )
+    runtime_agent = runtime_config.nemotron_osworld.responses_api_agents.nemotron_osworld
+    runtime_policy = OmegaConf.to_container(
+        runtime_agent.context_history.policy,
+        resolve=True,
+    )
+    if not isinstance(runtime_policy, dict):
+        raise TypeError("Gym runtime history policy did not resolve to a mapping")
+    _validate_rfc0040_history_policy(runtime_policy, source="Gym's final runtime config")
 
 
 def compose_and_validate_config(
@@ -85,6 +140,7 @@ def compose_and_validate_config(
         raise TypeError("OSWorld recipe did not resolve to a mapping")
     master_config = MasterConfig.model_validate(resolved)
     validate_single_controller_config(master_config)
+    validate_osworld_history_policy_config(master_config)
     return master_config
 
 

@@ -47,6 +47,7 @@ from nemo_rl.environments.games.sliding_puzzle import (
 )
 from nemo_rl.environments.interfaces import EnvironmentReturn
 from nemo_rl.experience.interfaces import (
+    NEMO_GYM_ACTIVE_GENERATION_INDICES_KEY,
     NEMO_GYM_GROUP_ATTEMPT_KEY,
     NEMO_GYM_GROUP_ID_KEY,
     NEMO_GYM_ROLLOUT_INDEX_KEY,
@@ -2164,6 +2165,35 @@ def test_run_nemo_gym_rollout_sync_drains_entire_batch(monkeypatch):
     assert actual is expected
 
 
+def test_run_nemo_gym_rollout_sync_uses_explicit_prompt_group_size(monkeypatch):
+    input_batch = BatchedDataDict({"loss_multiplier": torch.ones(12)})
+    expected = rollouts_mod.NemoGymRolloutResult(
+        input_ids=torch.empty(0),
+        final_batch=input_batch,
+        rollout_metrics={},
+        task_index=None,
+    )
+
+    async def fake_stream(**kwargs):
+        assert kwargs["num_generations"] == input_batch.size
+        assert kwargs["prompt_group_size"] == 4
+        yield expected
+
+    monkeypatch.setattr(rollouts_mod, "run_async_nemo_gym_rollout", fake_stream)
+
+    actual = run_nemo_gym_rollout_sync(
+        policy_generation=None,
+        input_batch=input_batch,
+        tokenizer=None,
+        task_to_env={},
+        generation_config={},
+        log_full_result_tables=False,
+        num_generations=4,
+    )
+
+    assert actual is expected
+
+
 def test_rollout_manager_consumes_stream_and_restores_input_order():
     class _ReadyRef:
         def __init__(self, value):
@@ -2393,6 +2423,12 @@ def test_prepare_nemo_gym_rows_stamps_distinct_legacy_prompt_groups():
     assert rows[0][NEMO_GYM_GROUP_ID_KEY] != rows[2][NEMO_GYM_GROUP_ID_KEY]
     assert [row[NEMO_GYM_GROUP_ATTEMPT_KEY] for row in rows] == [0, 0, 0, 0]
     assert [row[NEMO_GYM_ROLLOUT_INDEX_KEY] for row in rows] == [0, 1, 0, 1]
+    assert [row[NEMO_GYM_ACTIVE_GENERATION_INDICES_KEY] for row in rows] == [
+        [0, 1],
+        [0, 1],
+        [0, 1],
+        [0, 1],
+    ]
     assert [row["_rowidx"] for row in rows] == [0, 1, 2, 3]
 
 

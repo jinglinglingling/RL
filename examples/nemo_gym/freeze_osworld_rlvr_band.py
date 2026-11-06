@@ -15,6 +15,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import tempfile
 from collections.abc import Iterable
@@ -84,6 +85,174 @@ def _unreadable_upload_assets(task: dict[str, Any]) -> list[str]:
         except OSError as error:
             failures.append(f"{path}: {type(error).__name__}")
     return failures
+
+
+def _repair_runtime_commands(task: dict[str, Any]) -> int:
+    """Rewrite process-kill commands that can terminate their own setup shell."""
+    replacements = (
+        (
+            "pkill -TERM -f thunderbird || true",
+            "for name in thunderbird thunderbird-bin thunderbird-esr; "
+            'do pkill -TERM -x "$name" || true; done',
+        ),
+        (
+            "pkill -f thunderbird || true",
+            "for name in thunderbird thunderbird-bin thunderbird-esr; "
+            'do pkill -x "$name" || true; done',
+        ),
+        (
+            "pkill -TERM -f thunderbird",
+            "for name in thunderbird thunderbird-bin thunderbird-esr; "
+            'do pkill -TERM -x "$name" || true; done',
+        ),
+        (
+            "pkill -f thunderbird",
+            "for name in thunderbird thunderbird-bin thunderbird-esr; "
+            'do pkill -x "$name" || true; done',
+        ),
+    )
+    pkill_f_pattern = re.compile(
+        r"(?P<prefix>\bpkill(?:\s+-[A-Za-z0-9]+)*\s+-f\s+)"
+        r"(?P<quote>['\"]?)(?P<pattern>[^\s;'\"\n]+)(?P=quote)"
+    )
+
+    def guard_pkill_match(match: re.Match[str]) -> str:
+        pattern = match.group("pattern")
+        # Patterns such as '[c]hrome' already avoid matching the setup shell's
+        # literal command line while still matching the target process.
+        if re.search(r"\[[^\]]+\]", pattern):
+            return match.group(0)
+        first_alnum = next(
+            (index for index, character in enumerate(pattern) if character.isalnum()),
+            None,
+        )
+        if first_alnum is None:
+            return match.group(0)
+        guarded = (
+            pattern[:first_alnum]
+            + f"[{pattern[first_alnum]}]"
+            + pattern[first_alnum + 1 :]
+        )
+        return (
+            match.group("prefix")
+            + match.group("quote")
+            + guarded
+            + match.group("quote")
+        )
+
+    steps = list(task.get("config", []))
+    evaluator = task.get("evaluator")
+    if isinstance(evaluator, dict):
+        steps.extend(evaluator.get("postconfig", []))
+
+    repairs: list[dict[str, str]] = []
+    for step in steps:
+        if not isinstance(step, dict) or step.get("type") != "execute":
+            continue
+        parameters = step.get("parameters")
+        if not isinstance(parameters, dict):
+            continue
+        command = parameters.get("command")
+        if not isinstance(command, str):
+            continue
+        replacement = command
+        for unsafe, safe in replacements:
+            replacement = replacement.replace(unsafe, safe)
+        replacement = pkill_f_pattern.sub(guard_pkill_match, replacement)
+        if replacement == command:
+            continue
+        parameters["command"] = replacement
+        repairs.append(
+            {
+                "kind": "runtime_command_rewrite",
+                "from": command,
+                "to": replacement,
+                "reason": "avoid pkill -f matching and terminating its setup shell",
+            }
+        )
+
+    if repairs:
+        metadata = task.setdefault("metadata", {})
+        if not isinstance(metadata, dict):
+            raise ValueError(f"{task.get('id')}: metadata must be an object")
+        metadata.setdefault("freeze_repairs", []).extend(repairs)
+    return len(repairs)
+
+
+def _repair_upload_dependencies(task: dict[str, Any]) -> int:
+    """Remove duplicated setup commands that consume uploads before they exist.
+
+    Some generated tasks contain the same ``execute`` step both immediately
+    before and after ``upload_file``. The reference sandbox tolerated the first
+    failed copy, while OpenSandbox correctly treats any failed setup step as
+    fatal. Only remove the early command when an identical post-upload command
+    exists; fail fast for ambiguous ordering bugs instead of silently changing
+    task semantics.
+    """
+    config = task.get("config", [])
+    if not isinstance(config, list):
+        raise ValueError(f"{task.get('id')}: config must be a list")
+
+    upload_indices = [
+        index
+        for index, step in enumerate(config)
+        if isinstance(step, dict) and step.get("type") == "upload_file"
+    ]
+    remove_indices: list[int] = []
+    repairs: list[dict[str, Any]] = []
+    for index, step in enumerate(config):
+        if not isinstance(step, dict) or step.get("type") != "execute":
+            continue
+        parameters = step.get("parameters")
+        if not isinstance(parameters, dict):
+            continue
+        command = parameters.get("command")
+        command_text = (
+            " ".join(str(part) for part in command)
+            if isinstance(command, list)
+            else str(command)
+        )
+        if "/home/user/.uploads/" not in command_text:
+            continue
+        if any(upload_index < index for upload_index in upload_indices):
+            continue
+
+        later_uploads = [
+            upload_index for upload_index in upload_indices if upload_index > index
+        ]
+        duplicate_indices = [
+            later_index
+            for later_index, later_step in enumerate(config)
+            if later_uploads
+            and later_index > later_uploads[0]
+            and later_step == step
+        ]
+        if not duplicate_indices:
+            raise ValueError(
+                f"{task.get('id')}: execute step {index} consumes "
+                "/home/user/.uploads before upload_file without an identical "
+                "post-upload retry"
+            )
+        remove_indices.append(index)
+        repairs.append(
+            {
+                "kind": "remove_duplicate_pre_upload_execute",
+                "removed_config_index": index,
+                "post_upload_config_index": duplicate_indices[0],
+                "reason": "OpenSandbox setup is fail-fast; uploads must exist first",
+            }
+        )
+
+    if not remove_indices:
+        return 0
+    task["config"] = [
+        step for index, step in enumerate(config) if index not in remove_indices
+    ]
+    metadata = task.setdefault("metadata", {})
+    if not isinstance(metadata, dict):
+        raise ValueError(f"{task.get('id')}: metadata must be an object")
+    metadata.setdefault("freeze_repairs", []).extend(repairs)
+    return len(repairs)
 
 
 def _copy_task_assets(
@@ -213,6 +382,8 @@ def freeze_band(
         included_manifest_rows: list[dict[str, Any]] = []
         quarantined_rows: list[dict[str, Any]] = []
         asset_count = 0
+        runtime_command_repairs = 0
+        upload_dependency_repairs = 0
         for manifest_row in manifest_rows:
             task_id = _validate_band_row(manifest_row, seen)
             task_path = source / "tasks" / f"{task_id}.json"
@@ -231,6 +402,8 @@ def freeze_band(
             ):
                 raise ValueError(f"{task_id}: task/manifest pass rate mismatch")
 
+            upload_dependency_repairs += _repair_upload_dependencies(task)
+            runtime_command_repairs += _repair_runtime_commands(task)
             asset_failures = _unreadable_upload_assets(task)
             if asset_failures:
                 if not quarantine_unreadable_assets:
@@ -297,6 +470,8 @@ def freeze_band(
             "unique_tasks": len(tasks),
             "source_tasks": len(manifest_rows),
             "quarantined_tasks": len(quarantined_rows),
+            "runtime_command_repairs": runtime_command_repairs,
+            "upload_dependency_repairs": upload_dependency_repairs,
             "num_repeats": num_repeats,
             "gym_rows": row_count,
             "upload_assets": asset_count,

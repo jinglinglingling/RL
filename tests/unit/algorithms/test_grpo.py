@@ -5422,6 +5422,10 @@ class TestValidateFunction:
 
         # Mock config
         mock_config = mock_grpo_components["master_config"]
+        # A final partial validation batch must still run when the configured
+        # batch size is larger than the dataset/sample cap.
+        mock_config.grpo.max_val_samples = 1
+        mock_config.grpo.val_batch_size = 8
         mock_config.logger["num_val_samples_to_print"] = 1
 
         mock_rollout_metrics = {"mean_gen_tokens_per_sample": 10.0}
@@ -5448,6 +5452,8 @@ class TestValidateFunction:
                         )
 
         # Verify metrics are returned correctly
+        mock_rollout.assert_called_once()
+        assert val_metrics["accuracy"] == pytest.approx(1.0)
         assert "accuracy" in val_metrics
         assert "avg_length" in val_metrics
 

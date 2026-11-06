@@ -1,0 +1,20 @@
+# Checkpoint variant of grpo_nemotron_omni_30ba3b_osworld_v2_rpga_agentenv_eval_64k.yaml.
+
+defaults: grpo_nemotron_omni_30ba3b_osworld_v2_rpga_agentenv_checkpoint_eval.yaml
+
+policy:
+  generation:
+    max_new_tokens: 4096
+    vllm_cfg:
+      max_model_len: 64000
+
+data:
+  max_input_seq_length: 64000
+
+env:
+  nemo_gym:
+    nemotron_osworld:
+      responses_api_agents:
+        nemotron_osworld:
+          max_tokens: 4096
+          bound_model_calls_by_rollout_deadline: true

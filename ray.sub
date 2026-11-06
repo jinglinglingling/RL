@@ -21,6 +21,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+OSWORLD_TRAINING_RELAUNCH_LOCK="/lustre/fs1/portfolios/nemotron/projects/nemotron_omni_vision/users/linglinj/RL-flashreinforce-osworld/.osworld_training_blocked"
+if [[ -f "$OSWORLD_TRAINING_RELAUNCH_LOCK" && "${OSWORLD_EVAL_GUARD_BYPASS:-0}" != "1" ]]; then
+  echo "[ERROR] OSWorld training relaunch is blocked by $OSWORLD_TRAINING_RELAUNCH_LOCK" >&2
+  exit 75
+fi
 
 set -eoux pipefail
 
@@ -261,7 +266,25 @@ COMMON_SRUN_ARGS+=" --no-container-mount-home"
 COMMON_SRUN_ARGS+=" --mpi=pmix"
 COMMON_SRUN_ARGS+=" --container-mounts=$MOUNTS"
 COMMON_SRUN_ARGS+=" --container-image=$CONTAINER"
-COMMON_SRUN_ARGS+=" --container-workdir=$SLURM_SUBMIT_DIR"
+# SLURM_SUBMIT_DIR is a host path. If that path is mounted elsewhere in the
+# container, start in the container-side destination instead of asking pyxis to
+# chdir to a path that does not exist there.
+CONTAINER_WORKDIR=${CONTAINER_WORKDIR:-$SLURM_SUBMIT_DIR}
+if [[ "$CONTAINER_WORKDIR" == "$SLURM_SUBMIT_DIR" ]]; then
+  IFS=',' read -ra _container_mount_specs <<< "$MOUNTS"
+  for _container_mount_spec in "${_container_mount_specs[@]}"; do
+    _container_mount_source="${_container_mount_spec%%:*}"
+    _container_mount_destination="${_container_mount_spec#*:}"
+    _container_mount_destination="${_container_mount_destination%%:*}"
+    if [[ "$_container_mount_source" == "$SLURM_SUBMIT_DIR" ]]; then
+      CONTAINER_WORKDIR="$_container_mount_destination"
+      break
+    fi
+  done
+  unset _container_mount_specs _container_mount_spec
+  unset _container_mount_source _container_mount_destination
+fi
+COMMON_SRUN_ARGS+=" --container-workdir=$CONTAINER_WORKDIR"
 # Pass partition/account explicitly for overlapping srun calls.
 COMMON_SRUN_ARGS+=" -p $SLURM_JOB_PARTITION"
 COMMON_SRUN_ARGS+=" -A $SLURM_JOB_ACCOUNT"
@@ -415,6 +438,39 @@ check_srun_processes() {
       touch "$LOG_DIR/ENDED"
       exit 1
     fi
+  done
+}
+
+# A just-released whole-node allocation can briefly reject its first job step
+# with "Memory required by task is not available" while Slurm finishes cleanup.
+# Keep the background client alive and retry only short pre-container failures;
+# real container failures create ENDED or run long enough to be propagated.
+run_srun_with_startup_retry() {
+  local label="$1"
+  shift
+  local attempt=1
+  local max_attempts="${SRUN_STARTUP_MAX_ATTEMPTS:-5}"
+  local retry_delay="${SRUN_STARTUP_RETRY_DELAY_SECONDS:-30}"
+  local short_failure_seconds="${SRUN_STARTUP_SHORT_FAILURE_SECONDS:-120}"
+  local started_at runtime rc
+
+  while (( attempt <= max_attempts )); do
+    started_at=$SECONDS
+    set +e
+    "$@"
+    rc=$?
+    set -e
+    runtime=$((SECONDS - started_at))
+
+    if [[ "$rc" -eq 0 ]] || [[ -f "$LOG_DIR/ENDED" ]] \
+      || (( runtime >= short_failure_seconds )) \
+      || (( attempt == max_attempts )); then
+      return "$rc"
+    fi
+
+    echo "[WARN] $label srun exited with rc=$rc after ${runtime}s; retrying startup attempt $((attempt + 1))/$max_attempts in ${retry_delay}s..."
+    sleep "$retry_delay"
+    attempt=$((attempt + 1))
   done
 }
 
@@ -1049,7 +1105,10 @@ fi
 
 # Start the Ray head.
 log_phase "launching Ray head + worker sruns"
-srun $COMMON_SRUN_ARGS --container-name=ray-head --nodes=1 --ntasks=1 --cpus-per-task=$CPUS_PER_WORKER -w "$head_node" -o $LOG_DIR/ray-head.log bash -x -c "$head_cmd" &
+run_srun_with_startup_retry "ray-head" \
+  srun $COMMON_SRUN_ARGS --container-name=ray-head --nodes=1 --ntasks=1 \
+  --cpus-per-task=$CPUS_PER_WORKER -w "$head_node" \
+  -o "$LOG_DIR/ray-head.log" bash -x -c "$head_cmd" &
 SRUN_PIDS["ray-head"]=$!
 
 # Start the Ray workers (all nodes except the head) with a single batched srun, so
@@ -1061,7 +1120,8 @@ if [[ $_num_workers -gt 0 ]]; then
   # srun -o with %t produces per-task log files; zero-pad to the worker-count
   # width so ray-worker-*.log filenames sort naturally (e.g. ray-worker-007.log).
   _task_digits=${#_num_workers}
-  srun $COMMON_SRUN_ARGS --container-name=ray-worker --exact \
+  run_srun_with_startup_retry "ray-workers" \
+    srun $COMMON_SRUN_ARGS --container-name=ray-worker --exact \
     --nodes=$_num_workers \
     --ntasks=$_num_workers \
     --ntasks-per-node=1 \
@@ -1129,8 +1189,8 @@ else
 
   echo "[INFO][$(date '+%Y-%m-%dT%H:%M:%S%z')] All workers connected!"
 
-  log_phase "generating attach helper (scontrol show job)"
-  CONTAINER_CWD=$(scontrol show job $SLURM_JOB_ID | grep -oP 'WorkDir=\K[^ ]+' | head -1)
+  log_phase "generating attach helper"
+  CONTAINER_CWD=$CONTAINER_WORKDIR
   echo "[INFO]: Ray Cluster is idled, run this on the slurm head node to get a shell to the head node:"
   cat <<EOF >$SLURM_SUBMIT_DIR/${SLURM_JOB_ID}-attach.sh
 # No args launches on the head node (node 0)

@@ -11,3 +11,12 @@ defaults: grpo_nemotron_omni_30ba3b_osworld_v2_cc_molt_b8k8_checkpoint.yaml
 async_rl:
   max_inflight_prompts: 8
   max_buffered_rollouts: 32
+
+policy:
+  megatron_cfg:
+    scheduler:
+      # step_40 was produced with B17/N16 (GBS 272), while this profile uses
+      # B8/N8 (GBS 64). Keep the runtime constant-LR schedule and restore the
+      # optimizer state without requiring sample-count-derived scheduler
+      # horizons to match across the batch-size transition.
+      override_opt_param_scheduler: true

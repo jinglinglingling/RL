@@ -24,6 +24,7 @@ from examples.nemo_gym.launch_osworld_v2_cc import (
     RECIPE_CONFIG_PATHS,
     compose_and_validate_config,
     parse_args,
+    validate_osworld_history_policy_config,
 )
 
 
@@ -371,6 +372,7 @@ def test_osworld_v2_molt_checkpoint_recipe_composes_and_validates(monkeypatch):
     assert config.checkpointing["save_optimizer"] is True
     assert config.checkpointing["save_data_plane"] is True
     assert config.checkpointing["quiesce_rollouts_for_checkpoint"] is True
+    assert config.checkpointing["keep_top_k"] == 5
     assert config.policy["megatron_cfg"]["checkpoint"]["async_save"] is False
     assert config.async_rl.min_groups_for_streaming_train == 8
     assert config.async_rl.stage_full_advantage_window is True
@@ -433,12 +435,18 @@ def test_flash_recipes_compose_and_validate(
     assert config.loss_fn.truncated_importance_sampling_type == "seq-mask-tis"
     assert config.loss_fn.is_correction_gating == "binary_kl"
     assert config.loss_fn.truncated_importance_sampling_ratio_min == 0.0
-    assert config.loss_fn.truncated_importance_sampling_ratio == 0.01
+    expected_binary_kl_threshold = 0.001 if prompts == 17 else 0.01
+    assert (
+        config.loss_fn.truncated_importance_sampling_ratio
+        == expected_binary_kl_threshold
+    )
     assert config.loss_fn.loss_agg_mode == "prompt-mean-token-mean"
     if prompts == 17:
         assert config.policy["train_global_batch_size"] > 16 * 16
         assert config.async_rl.min_groups_for_streaming_train == 17
-        assert config.async_rl.max_buffered_rollouts == 17
+        assert config.async_rl.max_buffered_rollouts == 32
+        assert config.cluster["num_nodes"] == 3
+        assert config.policy["generation"]["colocated"]["resources"]["num_nodes"] == 2
 
 
 def test_launcher_selects_explicit_flash_recipe(monkeypatch):
@@ -459,3 +467,126 @@ def test_launcher_selects_explicit_flash_recipe(monkeypatch):
     assert args.recipe == "flash-b8n8-dr-grpo"
     assert args.validate_only is True
     assert overrides == ["logger.log_dir=/logs/flash"]
+
+
+def test_yi_union_agentenv_flash_b32n4_recipe_is_exact(monkeypatch):
+    monkeypatch.setenv("NANO_OMNI_MODEL_NAME", "/models/nemotron-omni")
+    monkeypatch.setenv(
+        "NANO_OMNI_CHAT_TEMPLATE",
+        "/models/nemotron-omni/chat_template.jinja",
+    )
+    monkeypatch.setenv("OSWORLD_GRPO_TRAIN_DATA", "/data/yi-union2698/train.jsonl")
+    monkeypatch.setenv("OSWORLD_CHECKPOINT_DIR", "/checkpoints/yi-union2698")
+    monkeypatch.setenv("OSWORLD_CANONICAL_HARNESS_ROOT", "/harness/osworld_internal")
+    monkeypatch.setenv("OSWORLD_CANONICAL_AGENT_SHA256", "agent-sha")
+    monkeypatch.setenv("OSWORLD_CANONICAL_FEEDBACK_SHA256", "feedback-sha")
+
+    config = compose_and_validate_config(
+        [],
+        config_path=RECIPE_CONFIG_PATHS["yi-union2698-agentenv-flash-b32n4"],
+    )
+
+    assert config.grpo.num_prompts_per_step == 32
+    assert config.grpo.num_generations_per_prompt == 4
+    assert config.grpo.max_num_steps == 100
+    assert config.grpo.seed == 43
+    assert config.grpo.adv_estimator.name == "dr_grpo"
+    assert config.policy["train_global_batch_size"] == 128
+    assert config.policy["train_micro_batch_size"] == 1
+    assert config.policy["logprob_chunk_size"] == 256
+    assert config.policy["max_total_sequence_length"] == 49152
+    assert config.policy["sequence_packing"]["enabled"] is True
+    assert config.policy["sequence_packing"]["train_mb_tokens"] == 49152
+    assert config.policy["sequence_packing"]["logprob_mb_tokens"] == 49152
+    assert config.policy["dynamic_batching"]["enabled"] is False
+    assert config.policy["offload_optimizer_for_logprob"] is True
+    assert config.policy["megatron_cfg"]["tensor_model_parallel_size"] == 1
+    assert config.policy["megatron_cfg"]["activation_checkpointing"] is True
+    optimizer = config.policy["megatron_cfg"]["optimizer"]
+    assert optimizer["lr"] == optimizer["min_lr"] == 5e-6
+    assert optimizer["weight_decay"] == 0.0
+    assert optimizer["adam_eps"] == 1e-8
+    assert optimizer["clip_grad"] == 1.0
+    assert optimizer["optimizer_cpu_offload"] is True
+    assert optimizer["optimizer_offload_fraction"] == 0.6
+    assert config.loss_fn.loss_agg_mode == "token-mean"
+    assert config.loss_fn.is_correction_gating == "binary_kl"
+    assert config.loss_fn.truncated_importance_sampling_ratio == 0.01
+    assert config.loss_fn.actor_importance_sampling_ratio_min == 0.0
+    assert config.loss_fn.actor_importance_sampling_ratio_max == 1e9
+    assert config.loss_fn.reference_policy_kl_penalty == 0.0
+    assert config.loss_fn.ratio_clip_c is None
+    assert config.async_rl.sampler.name == "in_order"
+    assert config.async_rl.sampler.max_lookahead_versions == 0
+    assert config.async_rl.sampler.warmup_lookahead_versions is None
+    assert config.async_rl.min_groups_for_streaming_train == 1
+    assert config.async_rl.stage_full_advantage_window is False
+    assert config.async_rl.staged_policy_probe_interval_s is None
+    assert config.async_rl.max_inflight_prompts == 32
+    assert config.async_rl.max_buffered_rollouts == 32
+    failure = config.async_rl.rollout_failure
+    assert failure.min_step_batch_fraction == 1
+    assert failure.on_dropped_prompt == "replace"
+    assert failure.max_replacement_attempts == 1
+    assert failure.replacement_reserve_prompts == 1
+    assert config.checkpointing["save_period"] == 2
+    assert config.checkpointing["keep_top_k"] == 1
+    assert config.cluster["num_nodes"] == 4
+    assert config.policy["generation"]["colocated"]["resources"]["num_nodes"] == 3
+    assert config.env["nemo_gym"]["config_paths"][1].endswith(
+        "nemotron_osworld_rfc0040_k8s.yaml"
+    )
+
+    agent = config.env["nemo_gym"]["nemotron_osworld"]["responses_api_agents"][
+        "nemotron_osworld"
+    ]
+    assert agent["prompt_format_variant"] == "rfc0015_v1"
+    assert agent["prompt_mode"] == "hf_tools"
+    assert agent["execution_feedback"] is True
+    assert agent["max_steps"] == 200
+    assert agent["max_tokens"] == 8192
+    assert agent["context_history"]["guards"]["max_total_tokens"] == 49152
+    assert config.policy["generation"]["vllm_cfg"]["max_model_len"] == 49152
+    assert config.policy["generation"]["vllm_kwargs"]["max_num_batched_tokens"] == 49152
+    assert config.data["max_input_seq_length"] == 49152
+    assert agent["context_history"]["policy"]["type"] == "rfc0040_k_s"
+    history_policy_config = agent["context_history"]["policy"]["config"]
+    assert set(history_policy_config) == {
+        "block_k",
+        "boundary_s",
+        "omission_marker",
+    }
+    assert history_policy_config["block_k"] == 8
+    assert history_policy_config["boundary_s"] == 3
+
+    gym_config = GlobalConfigDictParser().parse(
+        GlobalConfigDictParserConfig(
+            initial_global_config_dict=OmegaConf.create(
+                config.env["nemo_gym"]
+                | {
+                    "policy_base_url": "http://unused.invalid/v1",
+                    "policy_api_key": "test-key",
+                    "policy_model_name": config.policy["model_name"],
+                }
+            ),
+            skip_load_from_cli=True,
+            skip_load_from_dotenv=True,
+            offline=True,
+        )
+    )
+    runtime_policy = (
+        gym_config.nemotron_osworld.responses_api_agents.nemotron_osworld.context_history.policy
+    )
+    assert runtime_policy.type == "rfc0040_k_s"
+    assert set(runtime_policy.config) == {
+        "block_k",
+        "boundary_s",
+        "omission_marker",
+    }
+
+    history_policy_config["images"] = {"enabled": True}
+    with pytest.raises(
+        ValueError,
+        match="settings inherited from a different policy type: \\['images'\\]",
+    ):
+        validate_osworld_history_policy_config(config)

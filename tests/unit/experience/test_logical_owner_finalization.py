@@ -322,6 +322,46 @@ def test_failed_segment_collapses_entire_owner_without_losing_initial_prompt(
     assert result.metrics["finalize/valid_logical_owner_count"] == expected_valid
 
 
+def test_unverifiable_initial_prompt_drops_group_without_raising(
+    owner_stack: tuple,
+) -> None:
+    harness, data_plane, finalizer = owner_stack
+    initial = capture_segment(harness, "group_g0_s0")
+    staging_key = initial.receipt["manifest"][0]["staging_key"]
+    data_plane.rows["staged", staging_key]["token_ids_delta"][0, -1] += 1
+
+    result = finalize(finalizer, [[initial]])
+
+    assert result.dropped
+    assert result.meta is None
+    assert result.drop_reason == "group_g0: unverifiable initial prompt evidence"
+    assert result.metrics["finalize/group_dropped"] == 1.0
+    assert (result.valid_row_count, result.total_row_count) == (0, 0)
+    assert not any(partition == "canonical" for partition, _ in data_plane.rows)
+    assert not any(partition == "staged" for partition, _ in data_plane.rows)
+
+
+def test_all_masked_logical_rows_drop_group_without_publication(
+    owner_stack: tuple,
+) -> None:
+    harness, data_plane, finalizer = owner_stack
+    owners = [
+        [capture_segment(harness, "group_g0_s0")],
+        [capture_segment(harness, "group_g1_s0")],
+    ]
+
+    result = finalize(finalizer, owners, mask_sample=[True, True])
+
+    assert result.dropped
+    assert result.meta is None
+    assert result.drop_reason == "every logical row is masked"
+    assert result.metrics["finalize/group_dropped"] == 1.0
+    assert result.metrics["finalize/all_rows_masked"] == 1.0
+    assert (result.valid_row_count, result.total_row_count) == (0, 2)
+    assert not any(partition == "canonical" for partition, _ in data_plane.rows)
+    assert not any(partition == "staged" for partition, _ in data_plane.rows)
+
+
 @pytest.mark.parametrize("logprobs", [False, True])
 @pytest.mark.parametrize("supported", [False, True])
 def test_failed_owner_checks_router_before_forward_without_execution_padding(

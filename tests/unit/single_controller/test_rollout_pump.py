@@ -1226,6 +1226,62 @@ def test_actor_path_releases_generation_permit_before_finalization() -> None:
     asyncio.run(_main())
 
 
+@pytest.mark.parametrize("drop_stage", ["capture", "finalizer"])
+def test_actor_path_replaces_dropped_capture_group(drop_stage: str) -> None:
+    """Setup/capture and structural-finalizer drops must honor replace mode."""
+
+    class _CaptureManager:
+        def __init__(self) -> None:
+            self.prompts_seen: list[str] = []
+            self.stats = SimpleNamespace(committed=0)
+
+        async def generate_for_finalization(
+            self,
+            prompt: Any,
+            *,
+            target_step: int | None = None,
+            inflight_registry: dict[str, tuple[asyncio.Task[None], int]] | None = None,
+        ) -> Any:
+            del target_step, inflight_registry
+            self.prompts_seen.append(prompt["message_log"][0]["content"])
+            if drop_stage == "capture" and len(self.prompts_seen) == 1:
+                return None
+            return SimpleNamespace(group_id=f"g{len(self.prompts_seen)}")
+
+    async def _main() -> None:
+        manager = _CaptureManager()
+        ctrl = _pump_controller(manager, [_batch("step0"), _batch("spare")])
+        ctrl._master_config = SimpleNamespace(
+            grpo=GRPOConfig.model_construct(
+                max_num_epochs=1, num_prompts_per_step=1
+            ),
+            token_capture=SimpleNamespace(min_valid_fraction_per_group=None),
+        )
+        ctrl._algo_cfg = ctrl._master_config.grpo
+        ctrl._finalizer_actors = [object()]
+        finalizer_calls = 0
+
+        async def _finalize(request: Any) -> Any:
+            nonlocal finalizer_calls
+            del request
+            finalizer_calls += 1
+            if drop_stage == "finalizer" and finalizer_calls == 1:
+                return None
+            return SimpleNamespace(valid_row_count=1, total_row_count=1)
+
+        ctrl._finalize_with_actor = _finalize
+        await ctrl._rollout_pump()
+
+        assert manager.prompts_seen == ["step0", "spare"]
+        assert manager.stats.committed == 1
+        assert ctrl._batch_shortfall == {}
+        assert ctrl._batch_replacements == {0: 1}
+        # The committed replacement transfers the one held permit to the train pump.
+        assert ctrl._buffer_capacity._value == 3
+
+    asyncio.run(_main())
+
+
 @pytest.mark.parametrize("committed", [False, True])
 def test_actor_finalization_discards_recovery_ledger_ownership(
     committed: bool,

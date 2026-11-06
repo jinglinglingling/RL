@@ -121,12 +121,23 @@ class ClippedPGLossConfig(BaseModel, extra="allow"):
     token_level_loss: bool = True
     # "prompt-mean-token-mean" averages action-token losses within each prompt's
     # complete rollout population, then gives every prompt equal weight.
+    # "seq-mean-token-mean" (sample mean) averages within each training row, then
+    # gives every row equal weight; it requires token_level_loss=False.
     loss_agg_mode: str = "token-mean"
     # If True, apply the off-policy importance-sampling correction at the
     # sequence level (one weight per generated sample), as in GSPO.
     # If False (default), correction is applied at the token level as in the
     # original GRPO paper.
     sequence_level_importance_ratios: bool = False
+    # Bounds on the actor/rollout IS weight itself. A very large upper bound
+    # (for example 1e9) is the practical "untruncated" FlashREINFORCE setting;
+    # the independent sequence gate is configured below.
+    actor_importance_sampling_ratio_min: float = Field(
+        default=0.0, ge=0, allow_inf_nan=False
+    )
+    actor_importance_sampling_ratio_max: Optional[float] = Field(
+        default=None, gt=0, allow_inf_nan=False
+    )
 
     # --- Clipping ---
     ratio_clip_min: float = 0.2
@@ -271,13 +282,19 @@ class ClippedPGLossFn(LossFunction):
         self.kl_output_clamp_value = cfg.kl_output_clamp_value
         self.use_importance_sampling_correction = cfg.use_importance_sampling_correction
         self.loss_agg_mode = cfg.loss_agg_mode
-        if self.loss_agg_mode not in ("token-mean", "prompt-mean-token-mean"):
+        if self.loss_agg_mode not in (
+            "token-mean",
+            "prompt-mean-token-mean",
+            "seq-mean-token-mean",
+        ):
             raise ValueError(
-                "loss_agg_mode must be 'token-mean' or "
-                f"'prompt-mean-token-mean', got {self.loss_agg_mode!r}"
+                "loss_agg_mode must be 'token-mean', 'prompt-mean-token-mean', or "
+                f"'seq-mean-token-mean', got {self.loss_agg_mode!r}"
             )
         if self.loss_agg_mode == "prompt-mean-token-mean" and not cfg.token_level_loss:
             raise ValueError("prompt-mean-token-mean requires token_level_loss=True")
+        if self.loss_agg_mode == "seq-mean-token-mean" and cfg.token_level_loss:
+            raise ValueError("seq-mean-token-mean requires token_level_loss=False")
         # Type of truncated importance sampling: "tis" | "icepop" | "seq-mask-tis"
         self.truncated_importance_sampling_type = cfg.truncated_importance_sampling_type
         self.is_correction_gating = cfg.is_correction_gating
@@ -298,6 +315,21 @@ class ClippedPGLossFn(LossFunction):
 
         # Whether to compute importance weights per-sequence instead of per-token.
         self.sequence_level_importance_ratios = cfg.sequence_level_importance_ratios
+        self.actor_importance_sampling_ratio_min = (
+            cfg.actor_importance_sampling_ratio_min
+        )
+        self.actor_importance_sampling_ratio_max = (
+            cfg.actor_importance_sampling_ratio_max
+        )
+        if (
+            self.actor_importance_sampling_ratio_max is not None
+            and self.actor_importance_sampling_ratio_min
+            > self.actor_importance_sampling_ratio_max
+        ):
+            raise ValueError(
+                "actor_importance_sampling_ratio_min cannot exceed "
+                "actor_importance_sampling_ratio_max"
+            )
         self.positive_example_nll_weight = cfg.positive_example_nll_weight
         self.loss_type = (
             LossType.TOKEN_LEVEL if cfg.token_level_loss else LossType.SEQUENCE_LEVEL
@@ -707,9 +739,6 @@ class ClippedPGLossFn(LossFunction):
             # importance weight w_i = exp(Σ_t (log π_actor − log π_behaviour))
             seq_lp_diff = ((prev_logprobs - generation_logprobs) * mask).sum(dim=-1)
             actor_importance_weights = torch.exp(seq_lp_diff).detach()
-            actor_importance_weights = torch.nan_to_num(
-                actor_importance_weights, nan=0.0, posinf=0.0, neginf=0.0
-            )
             # Broadcast to token dimension so we can reuse existing reduction
             actor_importance_weights_expanded = actor_importance_weights.unsqueeze(-1)
         else:
@@ -717,8 +746,21 @@ class ClippedPGLossFn(LossFunction):
             actor_importance_weights_expanded = torch.exp(
                 prev_logprobs - generation_logprobs
             )
-            actor_importance_weights_expanded = torch.nan_to_num(
-                actor_importance_weights_expanded, nan=0.0, posinf=0.0, neginf=0.0
+        actor_importance_weights_expanded = torch.nan_to_num(
+            actor_importance_weights_expanded,
+            nan=self.actor_importance_sampling_ratio_min,
+            posinf=(
+                self.actor_importance_sampling_ratio_max
+                if self.actor_importance_sampling_ratio_max is not None
+                else 0.0
+            ),
+            neginf=self.actor_importance_sampling_ratio_min,
+        ).clamp_min(self.actor_importance_sampling_ratio_min)
+        if self.actor_importance_sampling_ratio_max is not None:
+            actor_importance_weights_expanded = (
+                actor_importance_weights_expanded.clamp_max(
+                    self.actor_importance_sampling_ratio_max
+                )
             )
         # ---- Truncated Importance Sampling ----
         # "tis"          – clamp IS weights to [min, max], where min defaults to 0

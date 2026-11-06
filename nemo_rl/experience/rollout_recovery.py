@@ -628,6 +628,45 @@ class RolloutRecoveryLedger:
                 else:
                     self.abandon_unsealed(cut, record.group_id)
 
+    def resize_groups_for_generation_count(
+        self,
+        cut: DataPlaneMutationCut,
+        expected_generations: int,
+    ) -> int:
+        """Regenerate restored groups when the configured rollout count changes.
+
+        A checkpoint can be resumed with a different ``N``. Existing physical
+        attempts cannot be mixed with the new logical population, so abandon
+        every old attempt, resize the sibling set, and let restart preparation
+        redispatch the same durable prompt under the new cardinality. The
+        controller's inventory cleanup removes staging rows no longer referenced
+        after the resize.
+        """
+        cut.require_live()
+        if expected_generations < 1:
+            raise ValueError("expected_generations must be at least one")
+        self.assert_checkpoint_safe()
+
+        resized = 0
+        for record in self._groups.values():
+            if record.expected_generations == expected_generations:
+                continue
+
+            self._abandon_entire_group(record)
+            if expected_generations < len(record.siblings):
+                del record.siblings[expected_generations:]
+            else:
+                record.siblings.extend(
+                    RolloutSiblingRecord(
+                        generation_index=index,
+                        attempts=[_new_attempt()],
+                    )
+                    for index in range(len(record.siblings), expected_generations)
+                )
+            record.expected_generations = expected_generations
+            resized += 1
+        return resized
+
     def _abandon_entire_group(self, record: PromptGroupRecoveryRecord) -> None:
         """Discard every current sibling when an incomplete group is atomic.
 

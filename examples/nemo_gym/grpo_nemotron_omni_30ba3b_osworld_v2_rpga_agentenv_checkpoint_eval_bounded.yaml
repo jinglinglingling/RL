@@ -1,0 +1,10 @@
+# Checkpoint variant of grpo_nemotron_omni_30ba3b_osworld_v2_rpga_agentenv_eval_bounded.yaml.
+
+defaults: grpo_nemotron_omni_30ba3b_osworld_v2_rpga_agentenv_checkpoint_eval.yaml
+
+env:
+  nemo_gym:
+    nemotron_osworld:
+      responses_api_agents:
+        nemotron_osworld:
+          bound_model_calls_by_rollout_deadline: true

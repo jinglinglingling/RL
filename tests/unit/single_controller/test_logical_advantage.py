@@ -400,6 +400,46 @@ def test_flash_prompt_weights_pool_all_segments_and_rollouts_per_dispatch_group(
     )
 
 
+_FLASH_SEQ_MEAN_LOSS = {
+    "use_importance_sampling_correction": True,
+    "truncated_importance_sampling_type": "seq-mask-tis",
+    "is_correction_gating": "binary_kl",
+    "truncated_importance_sampling_ratio_min": 0.0,
+    "truncated_importance_sampling_ratio": 0.01,
+    "force_on_policy_ratio": True,
+    "loss_agg_mode": "seq-mean-token-mean",
+    "token_level_loss": False,
+}
+
+
+def test_flash_sample_mean_is_a_qualified_cc_objective_without_prompt_weights():
+    meta, data = _batch([("a", [(0.0, 2), (1.0, 1)])])
+    ctrl = _controller(
+        meta,
+        data,
+        grpo={"baseline_population": "all_owners", "adv_estimator": {"name": "dr_grpo"}},
+        loss=_FLASH_SEQ_MEAN_LOSS,
+    )
+
+    result, valid = asyncio.run(ctrl._advantage_stage(meta))
+
+    assert valid
+    assert "prompt_loss_weight" not in result.fields
+
+
+def test_flash_sample_mean_requires_sequence_level_loss():
+    meta, data = _batch([("a", [(0.0, 2), (1.0, 1)])])
+    ctrl = _controller(
+        meta,
+        data,
+        grpo={"baseline_population": "all_owners", "adv_estimator": {"name": "dr_grpo"}},
+        loss=_FLASH_SEQ_MEAN_LOSS | {"token_level_loss": True},
+    )
+    with pytest.raises(ValueError, match="CC"):
+        asyncio.run(ctrl._advantage_stage(meta))
+    assert not ctrl._dp_client.puts
+
+
 def test_reward_clipping_precedes_logical_advantages_and_reward_metrics():
     meta, data = _batch([("a", [(-2.0, 2), (3.0, 1)])])
     ctrl = _controller(
