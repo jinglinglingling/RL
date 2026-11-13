@@ -3,7 +3,7 @@
 This branch pins the exact NeMo RL + NeMo Gym code, recipe and launcher used to train the v6 run to `step_200`,
 plus the HF export and the evaluation/aggregation procedure behind the reported numbers.
 
-The RL recipe, the training data (union2698) and the OSWorld harness come from Yi Dong's team (RPGA).
+The RL recipe (FlashREINFORCE), the training data (union2698) and the OSWorld harness come from Yi Dong's team.
 Linglin Jing implemented them on NeMo RL v2 and NeMo Gym.
 
 Paths under `/lustre/fs1/portfolios/nemotron/projects/nemotron_omni_vision/` are on the NRT/slurm-1 Lustre
