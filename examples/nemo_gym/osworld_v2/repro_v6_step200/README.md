@@ -23,6 +23,21 @@ T=0.6, top_p=0.95, 7,200 s per-episode budget:
 Paired step200 − iter881: Pass@1 +6.16 [+3.58, +8.80], Pass@4 +4.43 [+1.39, +7.76] (task-level bootstrap, 95%).
 Per-seed Pass@1 of step200: 59.18 / 57.37 / 59.77 / 55.30, so expect roughly ±2 pt seed noise.
 
+## Training curves
+
+![Training curves](training_curves.png)
+
+Taken from the TensorBoard logs of all 200 steps. Thin lines are per step, thick lines a 10-step moving average, and
+the dashed line marks the loss switch at step 150. A healthy reproduction should look similar:
+
+- Mean training reward rises from 0.50 (steps 1–10) to 0.63 (steps 141–150) and 0.64 (steps 191–200).
+- Entropy drops from 0.31 to about 0.20 in the first 30 steps, then stays between 0.20 and 0.24. It does not collapse.
+- Rollouts take 26–28 turns for most of training and about 23 at the end. The eval mean also drops, from 37.0 to
+  29.3 steps.
+- Tokens per assistant turn stay between 175 and 230 and grow slowly after step 60, with no blow-up.
+- Train vs. vLLM mismatch (gen KL) stays below 5e-4. The binary-KL gate masked 118 samples in total, about 0.5%.
+- A step takes 24 minutes on average (14 min waiting for rollouts, 9 min policy training), and the time stays flat.
+
 ## 1. Code
 
 ```bash
