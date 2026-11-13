@@ -1,6 +1,6 @@
-# Reproducing OSWorld v6 step200 (FlashREINFORCE B32×N4, union2698, AgentEnv)
+# Reproducing OSWorld RL step200 (FlashREINFORCE B32×N4, union2698, AgentEnv)
 
-This branch pins the exact NeMo RL + NeMo Gym code, recipe and launcher used to train the v6 run to `step_200`,
+This branch pins the exact NeMo RL + NeMo Gym code, recipe and launcher used to train the run to `step_200`,
 plus the HF export and the evaluation/aggregation procedure behind the reported numbers.
 
 The RL recipe (FlashREINFORCE), the training data (union2698) and the OSWorld harness come from Yi Dong's team.
@@ -18,7 +18,7 @@ T=0.6, top_p=0.95, 7,200 s per-episode budget:
 | Model | Pass@1 | Pass@4 | Mean steps |
 |---|---|---|---|
 | RFC0040 iter881 (base) | 51.74 | 65.10 | 37.0 |
-| v6 step200 | **57.90** | **69.53** | 29.3 |
+| RL step200 | **57.90** | **69.53** | 29.3 |
 
 Paired step200 − iter881: Pass@1 +6.16 [+3.58, +8.80], Pass@4 +4.43 [+1.39, +7.76] (task-level bootstrap, 95%).
 Per-seed Pass@1 of step200: 59.18 / 57.37 / 59.77 / 55.30, so expect roughly ±2 pt seed noise.
