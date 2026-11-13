@@ -33,7 +33,7 @@ git submodule update --init 3rdparty/Gym-workspace/Gym 3rdparty/Megatron-Bridge-
 
 | Component | Commit |
 |---|---|
-| NeMo Gym | `a71dd777` on `jinglinglingling/Gym` branch `linglinj/osworld-v6-step200-repro` |
+| NeMo Gym | `b9cff9f1` on `jinglinglingling/Gym` branch `linglinj/osworld-v6-step200-repro`: the training code (`a71dd777`) plus kill-on-timeout for AgentEnv sandboxes |
 | Megatron-Bridge | `5ed9799` (upstream) |
 | Megatron-LM | `1e7598cb` (upstream) + `patches/megatron-lm-1e7598cb-dcp-picklable-exception.patch` (only keeps DCP checkpoint errors picklable on Python 3.13; no numerical effect) |
 
@@ -46,7 +46,8 @@ General launcher documentation (prerequisites, Pyxis, AgentEnv TLS, evaluator to
 | Container | `.../users/linglinj/artifacts/containers/rl-osworld-v2-qualified-69764640.sqsh` (sha256 `1b4edcde…`, checked by `submit.sh`) |
 | Base policy | `.../users/yifazhang/rfc0040_k8_s3_hf_native_runtime_recovery_v1_production_20260820/exports/iter_0000881/mcore_to_hf` (+ `chat_template.jinja`) |
 | Train data | `.../users/linglinj/artifacts/data/osworld/union2698-astra-assets-20261028/yi-rpga-union2698-exact-20261022/` (`train.jsonl`, 2,698 tasks, `assets/`, `tmp_funcs/`) |
-| Canonical harness | `.../users/linglinj/artifacts/data/osworld/yi-rl-band1782-exact-20261021/harness` (agent sha256 `0420a951…`, feedback `ef74f8c3…`) |
+| Canonical harness | `.../users/linglinj/artifacts/data/osworld/yi-rl-band1782-exact-20261021/harness` (agent sha256 `0420a951…`, feedback `ef74f8c3…`). This directory is not shared; use the `harness/` copy from the internal bundle, cloned onto Lustre (same sha256s) |
+| Trained checkpoints (HF) | step200: `.../users/linglinj/artifacts/models/v6_step200_hf` (NRT), `.../users/linglinj/osworld-hsg-eval/models/v6_step200_hf` (HSG); iter881: `.../users/linglinj/artifacts/models/rfc0040_iter881` (HSG) |
 | Evaluator tools rootfs | `.../users/linglinj/artifacts/cache/osworld-evaluator-tools/rootfs` |
 | Sandboxes | AgentEnv cell-3, templates `osworld-v1:1,osworld-slim:1,osworld-v2:1` |
 
@@ -100,11 +101,13 @@ not part of this branch. Contract: `rfc0015_v1` agent / `hf_tools` / `feedback_v
 top_p=0.95, 16,384 tokens per turn, 49,152 context, `osworld-v1` template (forced by `EVAL_ONLY=1`). One node,
 4 TP1 vLLM engines, 32 concurrent episodes, about 1 h 10 min per seed.
 
-On HSG (`R=/lustre/fs1/portfolios/nemotron/projects/nemotron_omni_vision/users/linglinj/osworld-hsg-eval`):
+On HSG, from the RPGA copy of the internal bundle (cloned onto Lustre), with `R` set to a directory you own and your
+own copy of the cell-3 credential file (`endpoint=` / `apikey=` lines, mode 600) and CA:
 
 ```bash
-cd $R/code/RPGA/scripts/osworld
-F=$R/data/validation_nogdrive_361_gym.jsonl
+cd <bundle>/rpga/scripts/osworld
+export R=<your output dir> CELL2_CRED_FILE=<your .cell3_info> AENV_TLS_CA=<your cell3_ca.pem>
+F=/lustre/fs1/portfolios/nemotron/projects/nemotron_omni_vision/users/linglinj/osworld-hsg-eval/data/validation_nogdrive_361_gym.jsonl
 for s in 1 2 3 4; do
   RUN_ID=<name>_s$s SEED=$s MODEL_PATH=<hf export> VAL_DATA=$F TRAIN_DATA=$F \
   EVAL_BATCH_SIZE=361 ROLLOUT_GENERATE_BATCH_SIZE=361 OSWORLD_ROLLOUT_TIMEOUT_SEC=7200 \
