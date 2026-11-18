@@ -5,7 +5,7 @@ Each --model takes NAME=RUN_DIR[,RUN_DIR...] with one run directory per seed; ev
 osworld_results/episodes.jsonl. The first model is the candidate and is compared against each other model.
 
   python3 aggregate_paired.py --tasks validation_nogdrive_361_gym.jsonl \
-    --model step200=$R/runs/hsg_v1_t7200_v6step200_s1,...,$R/runs/hsg_v1_t7200_v6step200_s4 \
+    --model step200=$R/runs/hsg_v1_t7200_step200_s1,...,$R/runs/hsg_v1_t7200_step200_s4 \
     --model iter881=...
 """
 

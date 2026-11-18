@@ -11,5 +11,5 @@
 [submodule "3rdparty/Gym-workspace/Gym"]
 	path = 3rdparty/Gym-workspace/Gym
 	url = https://github.com/jinglinglingling/Gym.git
-	branch = linglinj/osworld-v6-step200-repro
+	branch = linglinj/osworld-flashreinforce
 	shallow = true

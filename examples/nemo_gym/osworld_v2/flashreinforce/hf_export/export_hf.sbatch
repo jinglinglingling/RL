@@ -16,7 +16,7 @@ set -euo pipefail
 [[ -e "$OUT" ]] && { echo "OUT already exists: $OUT" >&2; exit 2; }
 B=/opt/nemo-rl/3rdparty/Megatron-Bridge-workspace/Megatron-Bridge
 V=/opt/ray_venvs/nemo_rl.models.policy.workers.megatron_policy_worker.MegatronPolicyWorker
-W=/opt/nemo-rl/examples/nemo_gym/osworld_v2/repro_v6_step200/hf_export
+W=/opt/nemo-rl/examples/nemo_gym/osworld_v2/flashreinforce/hf_export
 LUSTRE_MOUNT="${LUSTRE_MOUNT:-/lustre:/lustre}"
 
 srun --no-container-mount-home --container-image="$CONTAINER" \

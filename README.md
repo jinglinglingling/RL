@@ -9,6 +9,9 @@
 
 </div>
 
+> **This branch (`linglinj/osworld-flashreinforce`)** carries the OSWorld FlashREINFORCE recipe on NeMo RL v2 and
+> NeMo Gym. Start at [`examples/nemo_gym/osworld_v2/flashreinforce/README.md`](examples/nemo_gym/osworld_v2/flashreinforce/README.md).
+
 ## 📣 News
 
 * [08/12/2026] MuseGlimmer RL is supported [on this branch](https://github.com/NVIDIA-NeMo/RL/tree/muse-glimmer-support) with the following [doc](https://github.com/NVIDIA-NeMo/RL/blob/muse-glimmer-support/docs/guides/models/muse-glimmer.md).

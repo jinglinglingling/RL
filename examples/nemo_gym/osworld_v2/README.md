@@ -1,5 +1,9 @@
 # NeMo RL v2 + OSWorld
 
+> **FlashREINFORCE recipe (B32×N4, union2698, AgentEnv; Pass@1 51.74 → 57.90):** see
+> [`flashreinforce/README.md`](flashreinforce/README.md). It is self-contained and is the recommended entry point.
+> The rest of this page documents the shared launcher and the earlier B8/N8 and B17/N16 profiles.
+
 This directory is the portable launcher for the validated OSWorld training path:
 
 - NeMo RL v2 `SingleController`
