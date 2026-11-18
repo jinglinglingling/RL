@@ -106,6 +106,15 @@ Fill in every `<...>` placeholder:
 | `<your-cache>` | A directory you own for the HF cache, the Gym virtualenv and runtime libraries |
 | `WANDB_ENTITY`, `WANDB_API_KEY` | Or set `OSWORLD_WANDB_ENABLED=false` |
 
+Copy the four host libraries the container needs (`submit.sh` otherwise looks for them on the submit host, and most
+login nodes do not have `libopenblas`):
+
+```bash
+mkdir -p <your-cache>/nemo-rl-v2-osworld/runtime-libs
+cp /lustre/fs1/portfolios/nemotron/projects/nemotron_omni_vision/users/linglinj/artifacts/cache/nemo-rl-v2-osworld/runtime-libs/* \
+  <your-cache>/nemo-rl-v2-osworld/runtime-libs/
+```
+
 Also set `SERIES` to a run name and never change it afterwards: resubmits and phase 2 find the checkpoints through it.
 The other values (container, base model, data, recipe, topology) are the ones of the reported run; leave them unless
 you deliberately want a different setup.
