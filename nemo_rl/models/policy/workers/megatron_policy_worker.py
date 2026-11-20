@@ -1883,6 +1883,14 @@ class MegatronPolicyWorkerImpl(
         mtp_detach_heads = bool(getattr(model_config, "mtp_detach_heads", False))
         mtp_loss_scaling_factor = getattr(model_config, "mtp_loss_scaling_factor", 0.1)
         loss_type = getattr(loss_fn, "loss_type", LossType.TOKEN_LEVEL)
+        # Losses whose returned value is already normalized (prompt_mean's
+        # materialized row weights) advertise MetricNormalizer.NONE; the
+        # end-of-step 1/N gradient rescale is then skipped.
+        from nemo_rl.algorithms.loss.interfaces import MetricNormalizer
+
+        grad_normalization = getattr(loss_fn, "gradient_normalization", None)
+        if not isinstance(grad_normalization, MetricNormalizer):
+            grad_normalization = None
 
         # MTP is a token-summed auxiliary loss and therefore always needs the
         # valid-token denominator. Under a sequence-level main loss, the split
@@ -1893,7 +1901,10 @@ class MegatronPolicyWorkerImpl(
         if (
             mtp_enabled
             and mtp_loss_scaling_factor != 0
-            and loss_type != LossType.TOKEN_LEVEL
+            and (
+                loss_type != LossType.TOKEN_LEVEL
+                or grad_normalization is MetricNormalizer.NONE
+            )
             and not mtp_detach_heads
         ):
             raise ValueError(
@@ -1908,6 +1919,7 @@ class MegatronPolicyWorkerImpl(
         return {
             "loss_fn": loss_fn,
             "loss_type": loss_type,
+            "grad_normalization": grad_normalization,
             "metric_normalizations": metric_normalizations,
             "mtp_enabled": mtp_enabled,
             "mtp_detach_heads": mtp_detach_heads,
@@ -2362,7 +2374,12 @@ class MegatronPolicyWorkerImpl(
         if in_loss_filter:
             _raise_if_no_survivors(global_valid_toks)
 
-        if state["loss_type"] == LossType.TOKEN_LEVEL:
+        from nemo_rl.algorithms.loss.interfaces import MetricNormalizer
+
+        if state.get("grad_normalization") is MetricNormalizer.NONE:
+            # prompt_mean row weights already sum to 1 over the step.
+            n_true = torch.ones_like(global_valid_toks)
+        elif state["loss_type"] == LossType.TOKEN_LEVEL:
             n_true = global_valid_toks
         else:
             n_true = global_valid_seqs

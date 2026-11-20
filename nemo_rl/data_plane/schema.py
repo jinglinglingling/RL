@@ -72,6 +72,10 @@ DP_TRAIN_FIELDS = (
     "sample_mask",
 )
 
+# Per-row loss weight for ``loss_fn.loss_normalization=prompt_mean`` (written by
+# SingleController's advantage stage, fetched by the trainer only when enabled).
+PROMPT_MEAN_WEIGHT_FIELD = "loss_row_weight"
+
 # Full-vocabulary MOPD teacher payload columns; exactly one is written per run,
 # selected by ``on_policy_distillation.full.teacher_payload``. Both are jagged-
 # packed per-token ``[N, S, D]``, with ``D`` the hidden size or vocabulary size.
@@ -94,6 +98,7 @@ OPD_FULL_TEACHER_INDEX_FIELD = "opd_full_teacher_index"
 # TransferQueue's lazy field-name registration race.
 SC_ROLLOUT_SCHEMA_FIELDS = (
     *DP_TRAIN_FIELDS,
+    PROMPT_MEAN_WEIGHT_FIELD,
     MASK_SAMPLE,
     TRUNCATED,
     "prompt_ids_for_adv",

@@ -80,7 +80,11 @@ from nemo_rl.algorithms.single_controller_utils.utils import (
 from nemo_rl.data_plane import KVBatchMeta
 from nemo_rl.data_plane.async_utils import call_data_plane
 from nemo_rl.data_plane.grouping import group_index_column, row_group_ids
-from nemo_rl.data_plane.schema import INPUT_IDS, INPUT_LENGTHS
+from nemo_rl.data_plane.schema import (
+    INPUT_IDS,
+    INPUT_LENGTHS,
+    PROMPT_MEAN_WEIGHT_FIELD,
+)
 from nemo_rl.distributed.batched_data_dict import BatchedDataDict
 
 if TYPE_CHECKING:
@@ -108,6 +112,11 @@ class AdvantageStageConfig:
     # computation moved here.
     train_data_dump_dir: Optional[str]
     filtering_on: bool = False
+    # Groups per optimizer step for ``loss_fn.loss_normalization=prompt_mean``;
+    # None when that normalization is off.
+    prompt_mean_groups: Optional[int] = None
+    # Print one GROUP_REWARDS line per prompt group (training reward history).
+    log_group_rewards: bool = False
     # Which writer the dump uses; ignored while train_data_dump_dir is None.
     debug_writer: DebugWriterConfig = field(default_factory=DebugWriterConfig)
 
@@ -162,6 +171,12 @@ class AdvantageStageConfig:
                 else None
             ),
             debug_writer=master_config.async_rl.debug_writer,
+            prompt_mean_groups=(
+                int(algo_cfg.num_prompts_per_step)
+                if loss_cfg.loss_normalization == "prompt_mean"
+                else None
+            ),
+            log_group_rewards=master_config.async_rl.log_group_rewards,
         )
 
     def input_fields(self) -> list[str]:
@@ -222,6 +237,59 @@ class AdvantageRequest:
     # Overrides the config's policy_logprobs_required for this call, e.g. a PPO
     # critic-warmup step that ran the policy-logprob pass under in-loss filtering.
     policy_logprobs_required: Optional[bool] = None
+    # Trainer weight version, used only to label GROUP_REWARDS log lines.
+    trainer_version: Optional[int] = None
+
+
+def _prompt_mean_row_weights(
+    group_index: torch.Tensor, mask: torch.Tensor, num_groups: int
+) -> torch.Tensor:
+    """Per-row weights for ``loss_fn.loss_normalization=prompt_mean``.
+
+    Rows sharing a ``group_index`` form one comparison group (for Forest owners,
+    every physical segment of every owner in a dispatch group). Each group weighs
+    ``1/num_groups`` and shares that weight uniformly over its eligible action
+    tokens, so ``sum(w_row * token_loss)`` needs no global denominator: the
+    weights of one optimizer step sum to 1. ``num_groups`` is the configured
+    groups per step, not the groups in this call, because a step may stream in
+    several chunks; a dropped group simply loses its mass. Rows without eligible
+    tokens weigh 0. ``mask[:, 1:]`` is the exact loss mask.
+    """
+    tokens_per_row = mask[:, 1:].sum(dim=-1).double()
+    group_index = group_index.to(device=mask.device, dtype=torch.long)
+    tokens_per_group = torch.zeros(
+        int(group_index.max().item()) + 1 if group_index.numel() else 0,
+        dtype=torch.double,
+        device=mask.device,
+    ).scatter_add(0, group_index, tokens_per_row)
+    weights = torch.zeros_like(tokens_per_row)
+    if num_groups > 0:
+        valid = tokens_per_row > 0
+        weights[valid] = 1.0 / (num_groups * tokens_per_group[group_index][valid])
+    return weights.to(torch.float32)
+
+
+def _log_group_rewards(
+    meta: KVBatchMeta, rewards: torch.Tensor, trainer_version: Optional[int]
+) -> None:
+    """Print each prompt group's rollout rewards; never raises."""
+    try:
+        group_rewards: dict[tuple[Any, Any], dict[str, float]] = {}
+        for row, tag in enumerate(meta.tags or []):
+            if not isinstance(tag, dict) or tag.get("is_execution_padding"):
+                continue
+            rollout = tag.get("logical_rollout_id") or meta.sample_ids[row]
+            key = (tag.get("prompt_idx"), tag.get("dispatch_group_id"))
+            group_rewards.setdefault(key, {})[rollout] = round(float(rewards[row]), 4)
+        for (prompt_idx, group_id), by_rollout in group_rewards.items():
+            print(
+                f"GROUP_REWARDS trainer_version={trainer_version} "
+                f"prompt_idx={prompt_idx} group={group_id} n={len(by_rollout)} "
+                f"rewards={sorted(by_rollout.values())}",
+                flush=True,
+            )
+    except Exception as exc:
+        print(f"GROUP_REWARDS logging failed: {exc!r}", flush=True)
 
 
 def split_meta_by_prompt_group(
@@ -391,6 +459,8 @@ class AdvantageComputer:
         rewards = squeeze_trailing_unit_dim(
             tensor_field(data, adv_cfg.reward_field)
         ).float()
+        if cfg.log_group_rewards:
+            _log_group_rewards(meta, rewards, request.trainer_version)
         # Scale before baselines/metrics; keep DataPlane rewards raw for replay.
         rewards = scale_rewards(
             BatchedDataDict({"total_reward": rewards}), cfg.algo.reward_scaling
@@ -739,6 +809,18 @@ class AdvantageComputer:
         if not torch.equal(final_sample_mask, sample_mask):
             fields_to_put[adv_cfg.sample_mask_field] = final_sample_mask
         new_fields = [adv_cfg.output_field]
+        if cfg.prompt_mean_groups is not None:
+            # Same comparison groups as the baseline. Forest padding fans out to
+            # group 0 but carries no eligible tokens.
+            row_groups = (
+                owner_batch.fanout(owner_batch.group_ids.squeeze(-1))
+                if owner_batch is not None
+                else prompt_ids.squeeze(-1)
+            )
+            fields_to_put[PROMPT_MEAN_WEIGHT_FIELD] = _prompt_mean_row_weights(
+                row_groups, mask, cfg.prompt_mean_groups
+            )
+            new_fields.append(PROMPT_MEAN_WEIGHT_FIELD)
         if returns is not None:
             fields_to_put[adv_cfg.returns_field] = returns
             new_fields.append(adv_cfg.returns_field)

@@ -175,6 +175,15 @@ class ClippedPGLossConfig(BaseModel, extra="allow"):
     # --- Loss type ---
     disable_ppo_ratio: bool = False
     token_level_loss: bool = True
+    # How token losses are reduced over the global batch (token_level_loss=True only):
+    #   "global_action_token_mean": every eligible action token weighs 1/T.
+    #   "prompt_mean": every comparison group weighs 1/G and its tokens share that
+    #     weight, so long groups do not dominate short ones. SingleController's
+    #     advantage stage materializes the per-row weights 1/(G * tokens_in_group)
+    #     as ``loss_row_weight``; they sum to 1 over one optimizer step.
+    loss_normalization: Literal["global_action_token_mean", "prompt_mean"] = (
+        "global_action_token_mean"
+    )
     # If True, apply the off-policy importance-sampling correction at the
     # sequence level (one weight per generated sample), as in GSPO.
     # If False (default), correction is applied at the token level as in the
@@ -542,11 +551,37 @@ class ClippedPGLossFn(LossFunction):
         # that pick the denominators — so split-API trainers can undo the
         # placeholder global_valid_*=1 normalization without maintaining a
         # consumer-side table. Keep in sync with __call__'s return dict.
-        grad_normalizer = (
-            MetricNormalizer.TOKENS
-            if self.loss_type == LossType.TOKEN_LEVEL
-            else MetricNormalizer.SEQUENCES
-        )
+        self.prompt_mean_loss = cfg.loss_normalization == "prompt_mean"
+        if self.prompt_mean_loss:
+            from nemo_rl.data_plane.schema import PROMPT_MEAN_WEIGHT_FIELD
+
+            self._row_weight_field = PROMPT_MEAN_WEIGHT_FIELD
+            # The materialized row weights replace the global token denominator, so
+            # every other term normalized by global_valid_* cannot share the loss.
+            unsupported = {
+                "token_level_loss=False": self.loss_type != LossType.TOKEN_LEVEL,
+                "reference_policy_kl_penalty!=0": self.reference_policy_kl_penalty
+                != 0,
+                "score_centering": bool(self.score_centering),
+                "positive_example_nll_weight>0": self.positive_example_nll_weight > 0,
+                "on_policy_distillation.full": self.opd_full is not None,
+            }
+            bad = [name for name, enabled in unsupported.items() if enabled]
+            if bad:
+                raise ValueError(
+                    "loss_fn.loss_normalization=prompt_mean is incompatible with: "
+                    + ", ".join(bad)
+                )
+            # The returned loss already sums to the step mean, so split-API trainers
+            # must not rescale it by a global denominator.
+            grad_normalizer = MetricNormalizer.NONE
+        else:
+            grad_normalizer = (
+                MetricNormalizer.TOKENS
+                if self.loss_type == LossType.TOKEN_LEVEL
+                else MetricNormalizer.SEQUENCES
+            )
+        self.gradient_normalization: MetricNormalizer = grad_normalizer
         self.metric_normalizations: dict[str, MetricNormalizer] = {
             # Normalized like the gradient (loss_type-dependent).
             "loss": grad_normalizer,
@@ -1053,6 +1088,15 @@ class ClippedPGLossFn(LossFunction):
                 mode="max-autotune-no-cudagraphs",
             )
         actor_objective = self._compiled_actor_objective or clipped_pg_actor_objective
+        row_weights = None
+        if self.prompt_mean_loss:
+            if self._row_weight_field not in data:
+                raise KeyError(
+                    "loss_fn.loss_normalization=prompt_mean needs the "
+                    f"{self._row_weight_field!r} column written by the "
+                    "SingleController advantage stage"
+                )
+            row_weights = data[self._row_weight_field].to(curr_logprobs.dtype)
         actor_loss, ratios, ratios_clamped = actor_objective(
             curr_logprobs,
             prev_logprobs=prev_logprobs,
@@ -1071,6 +1115,7 @@ class ClippedPGLossFn(LossFunction):
             sequence_level_importance_ratios=self.sequence_level_importance_ratios,
             use_cispo=self.use_cispo,
             token_level_loss=self.loss_type == LossType.TOKEN_LEVEL,
+            row_weights=row_weights,
         )
 
         score_centering_metrics: dict[str, Tensor] = {}

@@ -127,7 +127,13 @@ def test_forest_selection_config(policy):
 
 
 def _controller(
-    meta, data, *, grpo=None, loss=None, policy_logprobs_required: bool = False
+    meta,
+    data,
+    *,
+    grpo=None,
+    loss=None,
+    policy_logprobs_required: bool = False,
+    stage=None,
 ):
     settings = dict(
         num_generations_per_prompt=2,
@@ -175,6 +181,7 @@ def _controller(
         message_level_advantage_penalties_enabled=ctrl._message_level_advantage_penalties_enabled,
         shardable=True,
         train_data_dump_dir=None,
+        **(stage or {}),
     )
     ctrl._advantage_computer = AdvantageComputer(
         ctrl._dp_client,
@@ -555,6 +562,89 @@ def test_sibling_rollouts_with_distinct_prompts_share_baseline(
             else (-magnitude if tag["logical_slot"] == 0 else magnitude)
         )
         torch.testing.assert_close(data["advantages"][row], torch.full((3,), expected))
+
+
+def _prompt_mean_batch():
+    """Two dispatch groups with unequal segment counts, token counts and prompts."""
+    meta, data = _batch(
+        [("a", [(0.0, 3), (1.0, 1)]), ("b", [(1.0, 1), (0.0, 2)])], padding=True
+    )
+    data["token_mask"] = torch.tensor(
+        [[0.0, 1.0, 1.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [0.0, 1.0, 1.0]]
+        + [[0.0, 1.0, 1.0], [0.0, 1.0, 0.0], [0.0, 1.0, 1.0], [0.0, 0.0, 0.0]]
+    )
+    # Live web sessions never repeat a seed prompt byte for byte; an owner's
+    # segments share its original prompt.
+    data["prompt_ids_for_adv"] = torch.tensor(
+        [[1, 2]] * 3 + [[3, 4]] + [[5, 6]] + [[7, 8]] * 2 + [[1, 2]]
+    )
+    return meta, data
+
+
+def test_prompt_mean_weights_give_each_dispatch_group_equal_mass():
+    meta, data = _prompt_mean_batch()
+    ctrl = _controller(
+        meta,
+        data,
+        loss={"loss_normalization": "prompt_mean"},
+        stage={"prompt_mean_groups": 2},
+    )
+    asyncio.run(ctrl._advantage_stage(meta))
+    weights = data["loss_row_weight"]
+    tokens = data["token_mask"][:, 1:].sum(dim=-1)
+    mass: dict[str, float] = defaultdict(float)
+    for row, tag in enumerate(meta.tags):
+        if tag["is_execution_padding"]:
+            assert weights[row] == 0
+            continue
+        mass[tag["dispatch_group_id"]] += float(weights[row] * tokens[row])
+    assert mass.keys() == {"a", "b"}
+    for value in mass.values():
+        assert math.isclose(value, 0.5, rel_tol=1e-6)
+    # Group a has 6 eligible tokens and group b has 5: per-token weights differ.
+    torch.testing.assert_close(weights[0], torch.tensor(1 / (2 * 6)))
+    torch.testing.assert_close(weights[4], torch.tensor(1 / (2 * 5)))
+
+
+def test_prompt_mean_weights_use_configured_groups_per_step_when_streaming_chunks():
+    """A chunk holding 2 of the step's 8 groups carries mass 2/8, not 1."""
+    meta, data = _prompt_mean_batch()
+    ctrl = _controller(
+        meta,
+        data,
+        loss={"loss_normalization": "prompt_mean"},
+        stage={"prompt_mean_groups": 8},
+    )
+    asyncio.run(ctrl._advantage_stage(meta))
+    tokens = data["token_mask"][:, 1:].sum(dim=-1)
+    torch.testing.assert_close(
+        (data["loss_row_weight"] * tokens).sum(), torch.tensor(2 / 8)
+    )
+
+
+def test_prompt_mean_weights_are_off_by_default():
+    meta, data = _prompt_mean_batch()
+    ctrl = _controller(meta, data)
+    asyncio.run(ctrl._advantage_stage(meta))
+    assert "loss_row_weight" not in data.keys()
+
+
+def test_group_rewards_log_one_line_per_group(capsys):
+    meta, data = _prompt_mean_batch()
+    for tag in meta.tags:
+        tag["prompt_idx"] = 7 if tag["dispatch_group_id"] == "a" else 9
+    ctrl = _controller(meta, data, stage={"log_group_rewards": True})
+    ctrl._trainer_version = 3
+    asyncio.run(ctrl._advantage_stage(meta))
+    lines = [
+        line
+        for line in capsys.readouterr().out.splitlines()
+        if line.startswith("GROUP_REWARDS")
+    ]
+    assert len(lines) == 2
+    assert lines[0].startswith("GROUP_REWARDS trainer_version=3 ")
+    assert "prompt_idx=7 group=a n=2 rewards=[0.0, 1.0]" in lines[0]
+    assert "prompt_idx=9 group=b n=2 rewards=[0.0, 1.0]" in lines[1]
 
 
 @pytest.mark.nemo_gym

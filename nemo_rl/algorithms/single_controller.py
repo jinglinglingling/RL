@@ -176,6 +176,7 @@ from nemo_rl.data_plane.observability import (
 from nemo_rl.data_plane.schema import (
     DP_CALIB_INPUT_FIELDS,
     DP_TRAIN_FIELDS,
+    PROMPT_MEAN_WEIGHT_FIELD,
     ROLLOUT_METRICS,
     ROUTE_PLAN_TAG,
     SAMPLER_TOPK_FIELDS,
@@ -449,6 +450,9 @@ class SingleControllerActor:
             sampler_head_required=master_config.loss_fn.score_centering
             or sampler_replay_enabled(master_config.policy["generation"]),
         )
+        if stage_cfg.prompt_mean_groups is not None:
+            # The advantage stage writes the row weights next to the advantages.
+            self._train_fields = (*self._train_fields, PROMPT_MEAN_WEIGHT_FIELD)
         self._dp_client = actor_args.dp_client
         self._dp_backend = master_config.data_plane["backend"]
         if self._dp_backend == "mooncake_cpu":
@@ -5429,6 +5433,11 @@ class SingleControllerActor:
                     self._train_steps if self._train_data_dump is not None else None
                 ),
                 policy_logprobs_required=policy_logprobs_required,
+                trainer_version=(
+                    self._trainer_version
+                    if self._advantage_stage_config.log_group_rewards
+                    else None
+                ),
             )
             for shard in (shards if shards is not None else [meta])
         ]

@@ -143,8 +143,13 @@ def clipped_pg_actor_objective(
     sequence_level_importance_ratios: bool,
     use_cispo: bool,
     token_level_loss: bool,
+    row_weights: Optional[torch.Tensor] = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Compute and reduce the actor objective in one compilable region."""
+    """Compute and reduce the actor objective in one compilable region.
+
+    ``row_weights`` (``[B]``, prompt_mean) replaces the global token denominator:
+    the loss is ``sum(w_row * token_loss)`` over masked tokens.
+    """
     if force_on_policy_ratio:
         # Ratio is one in the forward pass, but gradients still flow.
         ratios = (curr_logprobs - curr_logprobs.detach()).exp()
@@ -177,7 +182,9 @@ def clipped_pg_actor_objective(
     actor_values = (
         clip_loss if importance_weights is None else importance_weights * clip_loss
     )
-    if token_level_loss:
+    if row_weights is not None:
+        actor_loss = (actor_values * mask * row_weights.unsqueeze(-1)).sum()
+    elif token_level_loss:
         actor_loss = masked_mean(
             actor_values, mask, global_normalization_factor=global_valid_toks
         )

@@ -556,6 +556,10 @@ class AsyncRLConfig(BaseModel, extra="allow"):
     max_buffered_rollouts: int = 64
     # Enable per-rollout diagnostic prints (prompt content / completion previews).
     diagnostics: bool = False
+    # Print one ``GROUP_REWARDS`` line per prompt group from the advantage stage
+    # (trainer version, dataset prompt index, sorted rollout rewards), so each
+    # task's training reward can be followed over a run.
+    log_group_rewards: bool = False
     # CPU actors that run the advantage stage. 0 keeps it in the controller
     # process, which is the historical behaviour and is correct, but it both
     # holds a whole cohort's advantage inputs in the controller's heap and
